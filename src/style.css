@@ -40,6 +40,8 @@ body {
   max-width: 620px;
   margin: 0 auto;
   padding: clamp(16px, 5vw, 48px) clamp(16px, 5vw, 32px);
+  padding-top: calc(clamp(16px, 5vw, 48px) + env(safe-area-inset-top));
+  padding-bottom: calc(clamp(16px, 5vw, 48px) + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   min-height: 100svh;

@@ -180,3 +180,9 @@ window.addEventListener('drop', (e) => e.preventDefault());
 window.addEventListener('pagehide', () => {
   if (resultUrl) URL.revokeObjectURL(resultUrl);
 });
+
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  });
+}

@@ -3,8 +3,7 @@
 Client-side PDF → dark-mode converter. Drop a PDF, download a dark-mode version.
 100% client-side: files never leave the device. Arabic (RTL) UI.
 
-Built with Vite + vanilla TypeScript. Deploys as a static site to Cloudflare Pages
-(`dist/`).
+Built with Vite + vanilla TypeScript. Static site, build output in `dist/`.
 
 ## How it works
 
@@ -41,7 +40,10 @@ tradeoff for speed and reliability.
 | `src/limits.ts` | Owner-specified hard limits (50 MB, 1000 pages) and the canvas scaling/clamping math. |
 | `scripts/copy-assets.mjs` | Copies pdf.js `cmaps/` + `wasm/` into `public/` (runs on `npm install`). |
 | `scripts/e2e-smoke.mjs` | Playwright e2e against the production build. |
-| `public/_headers` | Cloudflare Pages security headers incl. CSP (see below). |
+| `scripts/generate-icons.mjs` | Pure-Node (zero deps) PWA icon generator (`npm run icons`). |
+| `scripts/gen-sw.mjs` | Postbuild step: scans `dist/` and writes `dist/sw.js` (precached shell + runtime cache). |
+| `public/manifest.webmanifest` | PWA manifest (Arabic, `standalone`, icons). |
+| `public/_headers` | Security headers incl. CSP (see below). |
 
 ## Memory & quality model
 
@@ -66,6 +68,20 @@ Browsers die on pixel count, not file size:
   `pagehide`.
 - The e2e run injects the exact shipped CSP and fails on any policy violation.
 
+## PWA (installable, offline-capable)
+
+The app is an installable PWA:
+
+- **Installable** — web manifest (Arabic, `standalone` mode) + self-hosted icons
+  (`public/pwa-*.png`, `maskable-512.png`, `apple-touch-icon.png`). Android/Chrome
+  shows an install prompt; iOS uses "Add to Home Screen".
+- **Offline** — `dist/sw.js` precaches the app shell (index.html + entry assets +
+  icons) and the wasm decoders, so the app loads offline immediately. pdf.js/pdf-lib
+  chunks and `cmaps/` are cached on first use (stale-while-revalidate); offline
+  conversion works once the needed libraries were cached during an online run.
+- **Privacy preserved** — the service worker caches only the app's own static
+  assets. Input PDFs and generated output (blob URLs) are never cached or stored.
+
 ## Development
 
 ```sh
@@ -74,11 +90,6 @@ npm run dev            # local dev server
 npm test               # Vitest: pixel math + limits + pure helpers
 npm run typecheck      # tsc --noEmit
 npm run test:e2e       # build + Playwright smoke test (needs: npx playwright install chromium)
-npm run build          # tsc --noEmit && vite build → dist/
+npm run build          # tsc --noEmit && vite build && gen-sw → dist/
+npm run icons          # regenerate PWA icons into public/
 ```
-
-## Deploy
-
-Static build output is `dist/`. Cloudflare Pages: build command `npm run build`,
-output directory `dist`. `public/_headers` is copied into `dist/` and applied
-automatically by Cloudflare Pages.

@@ -111,6 +111,26 @@ try {
 
   await page.goto(`http://localhost:${PORT}/`);
 
+  const manifestRes = await page.request.get(`http://localhost:${PORT}/manifest.webmanifest`);
+  if (manifestRes.status() !== 200) {
+    throw new Error(`manifest not served (HTTP ${manifestRes.status()})`);
+  }
+  const swRes = await page.request.get(`http://localhost:${PORT}/sw.js`);
+  if (swRes.status() !== 200 || !/javascript/i.test(swRes.headers()['content-type'] ?? '')) {
+    throw new Error(
+      `sw.js not served correctly (HTTP ${swRes.status()}, ${swRes.headers()['content-type']})`,
+    );
+  }
+  const swScope = await page.evaluate(async () => {
+    for (let i = 0; i < 50; i++) {
+      const reg = await navigator.serviceWorker?.getRegistration();
+      if (reg) return reg.scope;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return null;
+  });
+  if (!swScope) throw new Error('service worker not registered');
+
   const dropzoneAttrs = await page.evaluate(() => {
     const el = document.getElementById('dropzone');
     return {
@@ -212,6 +232,16 @@ try {
 
   const outSize = outBytes.length;
   const cspViolations = await page.evaluate(() => window.__cspViolations ?? []);
+
+  await page.context().setOffline(true);
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
+  const offlineOk = await page.evaluate(() => {
+    const el = document.getElementById('dropzone');
+    return !!el && el.getAttribute('aria-label') === 'اختر ملف PDF';
+  });
+  await page.context().setOffline(false);
+  if (!offlineOk) throw new Error('app shell did not load offline from the service worker');
+
   if (wasmWarnings.length) {
     throw new Error(`wasm-related console warnings:\n${wasmWarnings.join('\n')}`);
   }
@@ -227,6 +257,7 @@ try {
   console.log(`  output pages: ${outDoc.getPageCount()}, %PDF verified, ${(outSize / 1024).toFixed(0)} KB`);
   console.log(`  border luminance: page1=${lum[0].toFixed(1)} page2=${lum[1].toFixed(1)} page3=${lum[2].toFixed(1)} (all < 64)`);
   console.log(`  CSP: ${cspViolations.length} violations under shipped policy`);
+  console.log(`  PWA:  sw registered (scope ${swScope}), offline reload OK`);
 
   await mkdir(join(ROOT, '.e2e'), { recursive: true });
   await writeFile(join(ROOT, '.e2e', 'output.pdf'), outBytes);
