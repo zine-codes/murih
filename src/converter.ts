@@ -1,6 +1,11 @@
 import type * as pdfjsType from 'pdfjs-dist';
 import type { PDFDocument } from 'pdf-lib';
-import { type ConvertMode, type PixelStats } from './pixels';
+import {
+  NEUTRAL_PALETTE,
+  type ConvertMode,
+  type NightPalette,
+  type PixelStats,
+} from './pixels';
 import {
   JPEG_QUALITY,
   baseScale,
@@ -27,6 +32,7 @@ export class AppError extends Error {
 export interface ConvertOptions {
   file: File;
   mode: ConvertMode;
+  palette?: NightPalette;
   onProgress: (done: number, total: number) => void;
   shouldCancel: () => boolean;
 }
@@ -74,6 +80,7 @@ function loadPdfLib(): Promise<typeof import('pdf-lib')> {
 
 export async function convertPdf(options: ConvertOptions): Promise<ConvertResult> {
   const { file, mode, onProgress, shouldCancel } = options;
+  const palette = options.palette ?? NEUTRAL_PALETTE;
   if (!fileWithinLimits(file.size)) throw new AppError('fileTooLarge');
 
   const pdfjs = await loadPdfjs();
@@ -112,6 +119,7 @@ export async function convertPdf(options: ConvertOptions): Promise<ConvertResult
         worker,
         workerOk,
         mode,
+        palette,
         shouldCancel,
       );
       workerOk = ok;
@@ -149,6 +157,7 @@ async function processPage(
   worker: PixelWorker | null,
   workerOk: boolean,
   mode: ConvertMode,
+  palette: NightPalette,
   shouldCancel: () => boolean,
 ): Promise<{ stats: PixelStats; workerOk: boolean }> {
   if (shouldCancel()) throw new AppError('cancelled');
@@ -190,15 +199,15 @@ async function processPage(
   if (worker && workerOk) {
     const image = ctx.getImageData(0, 0, width, height);
     try {
-      const { buf, stats: fullStats } = await worker.transform(image.data.buffer, mode);
+      const { buf, stats: fullStats } = await worker.transform(image.data.buffer, mode, palette);
       ctx.putImageData(new ImageData(new Uint8ClampedArray(buf), width, height), 0, 0);
       stats = fullStats;
     } catch {
       workerOk = false;
-      stats = transformPixelsOnMainThread(ctx, width, height, mode);
+      stats = transformPixelsOnMainThread(ctx, width, height, mode, palette);
     }
   } else {
-    stats = transformPixelsOnMainThread(ctx, width, height, mode);
+    stats = transformPixelsOnMainThread(ctx, width, height, mode, palette);
   }
 
   if (shouldCancel()) throw new AppError('cancelled');

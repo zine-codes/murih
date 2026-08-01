@@ -1,14 +1,19 @@
 import './style.css';
 import { convertPdf } from './converter';
 import { MAX_FILE_BYTES, MAX_PAGES } from './limits';
-import type { ConvertMode } from './pixels';
+import {
+  NEUTRAL_PALETTE,
+  WARM_PALETTE,
+  type ConvertMode,
+  type NightPalette,
+} from './pixels';
 
 const STR = {
   converting: 'جارٍ التحويل…',
   done: 'تم التحويل بنجاح',
   progress: (done: number, total: number) => `الصفحة ${done} من ${total}`,
   stats: (light: number, dark: number) =>
-    `صفحات فاتحة محوّلة إلى الوضع الداكن: ${light} — صفحات داكنة مُبقاة كما هي: ${dark}`,
+    `صفحات فاتحة محوّلة إلى الوضع الداكن: ${light} — صفحات داكنة مُبقاة داكنة: ${dark}`,
   errors: {
     fileTooLarge: `الملف أكبر من الحد المسموح (أقل من ${Math.floor(MAX_FILE_BYTES / (1024 * 1024))} ميجابايت).`,
     tooManyPages: `الملف يحتوي على ${MAX_PAGES} صفحة أو أكثر. الرجاء اختيار ملف أصغر.`,
@@ -33,6 +38,7 @@ const doneText = document.getElementById('done-text')!;
 const statsEl = document.getElementById('stats')!;
 const downloadBtn = document.getElementById('download') as HTMLButtonElement;
 const modeInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="mode"]'));
+const paletteInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="palette"]'));
 
 let currentAbort: AbortController | null = null;
 let resultUrl: string | null = null;
@@ -41,6 +47,13 @@ function selectedMode(): ConvertMode {
   return (document.querySelector<HTMLInputElement>('input[name="mode"]:checked')?.value ?? 'bw') === 'bw'
     ? 'bw'
     : 'gray';
+}
+
+function selectedPalette(): NightPalette {
+  return (document.querySelector<HTMLInputElement>('input[name="palette"]:checked')?.value ?? 'neutral') ===
+    'warm'
+    ? WARM_PALETTE
+    : NEUTRAL_PALETTE;
 }
 
 function cancelCurrent(): void {
@@ -58,6 +71,7 @@ function resetUi(): void {
   progressText.textContent = '';
   dropzone.classList.remove('disabled');
   for (const input of modeInputs) input.disabled = false;
+  for (const input of paletteInputs) input.disabled = false;
   if (resultUrl) {
     URL.revokeObjectURL(resultUrl);
     resultUrl = null;
@@ -69,6 +83,7 @@ function setBusy(busy: boolean): void {
   dropzone.setAttribute('aria-disabled', String(busy));
   dropzone.setAttribute('aria-busy', String(busy));
   for (const input of modeInputs) input.disabled = busy;
+  for (const input of paletteInputs) input.disabled = busy;
   progressWrap.hidden = !busy;
 }
 
@@ -93,6 +108,7 @@ function runConversion(file: File): void {
   convertPdf({
     file,
     mode: selectedMode(),
+    palette: selectedPalette(),
     onProgress: (done, totalPages) => {
       if (abort.signal.aborted) return;
       const pct = Math.round((done / totalPages) * 100);

@@ -23,7 +23,7 @@ your device, no account, no sign-up, no tracking.
 ## How to use it
 
 1. Open the app.
-2. Choose a mode (see below).
+2. Choose a mode and a night palette (see below).
 3. Drop your PDF onto the page (or tap to pick it).
 4. Download the converted dark-mode PDF.
 
@@ -31,11 +31,22 @@ your device, no account, no sign-up, no tracking.
 
 | Mode | What it does | Best for |
 | --- | --- | --- |
-| **أبيض وأسود فقط (نصوص)** — `bw` (default) | Every pixel becomes pure black or pure white using Otsu's method (a per-page threshold). Output is crisp 2-tone; colored pages (e.g. dark-green background + yellow text) come out clean instead of a gray mess. | Text documents, forms, papers |
-| **تدرج رمادي (مستندات تحتوي صورًا)** — `gray` | Keeps 256 levels of grayscale. Light pages are flipped into dark mode, dark pages stay dark. | Documents with photos or graphics |
+| **أبيض وأسود فقط (نصوص)** — `bw` (default) | Every pixel becomes one of two exact colors — a near-black background and an off-white foreground — using Otsu's method (a per-page threshold). Output is crisp 2-tone; colored pages (e.g. dark-green background + yellow text) come out clean instead of a gray mess. | Text documents, forms, papers |
+| **تدرج رمادي (مستندات تحتوي صورًا)** — `gray` | Keeps 256 levels of tone. Light pages are flipped into dark mode, dark pages are remapped into the night palette but kept dark. | Documents with photos or graphics |
+
+### Night palette (لون القراءة الليلية)
+
+The output never uses harsh pure black/white — that combo causes glare and
+smearing on phones. Instead every converted page is mapped onto a soft night
+palette: a near-black background with an off-white foreground (still ~15:1
+contrast, comfortably above the WCAG AAA target but far gentler at night).
+Pick one in the UI before converting:
+
+- **محايد (neutral)** — `#121212` background / `#E6E6E6` text (default)
+- **دافئ (warm)** — `#181512` background / `#EBE3CF` text, cuts blue light further
 
 In both modes, pages that are already dark are **never re-lightened** — they're
-kept dark.
+remapped into the chosen palette and kept dark.
 
 ## Limits
 
@@ -69,8 +80,10 @@ This is the whole point of the project:
    canvas exceeds the iOS Safari limit (~16.7 MP).
 3. **Grayscale + detect** — one pass converts every pixel to luminance (Rec. 709),
    builds a histogram, and classifies the page as light or dark.
-4. **Binarize or invert** — `bw` splits the histogram with Otsu and maps every
-   pixel to pure 0/255; `gray` inverts light pages and keeps dark pages as-is.
+4. **Map to the night palette** — `bw` splits the histogram with Otsu and maps
+   every pixel to one of the two palette colors; `gray` maps light pages through
+   a gamma-aware inverted LUT and remaps dark pages monotonically into the
+   palette (kept dark, never re-lightened).
 5. **Encode** — `bw` pages become lossless PNG, `gray` pages JPEG (q≈0.8), and
    `pdf-lib` assembles the output PDF, preserving the original page size (MediaBox).
 

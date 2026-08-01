@@ -12,11 +12,15 @@ Stack: Vite + vanilla TypeScript, no framework.
   do NOT pull runtime assets (incl. Arabic fonts) from CDNs — bundle/self-host.
 - Output PDF is built from rasterized pages. Text is NOT selectable in the
   output — accepted tradeoff for speed/reliability.
-- Default output is strict 2-tone: every pixel pure black or pure white via a
-  per-page Otsu threshold. An optional `gray` mode keeps 256-level grayscale for
-  image-heavy documents. User picks in the UI before dropping the file.
-- Per-page auto detection: light pages are binarized/inverted to white-on-black;
-  already-dark pages are binarized/grayscaled but never re-lightened (kept dark).
+- Default output is strict 2-tone mapped onto a night palette: every pixel is
+  exactly one of two colors — a near-black background and an off-white foreground —
+  via a per-page Otsu threshold. Neutral (#121212 / #E6E6E6) is the default; a warm
+  alternative (#181512 / #EBE3CF) is selectable in the UI. An optional `gray` mode
+  keeps 256-level tones for image-heavy documents. User picks mode + palette in the
+  UI before dropping the file.
+- Per-page auto detection: light pages are binarized/inverted onto the night
+  palette; already-dark pages are binarized/remapped into the palette range but
+  never re-lightened (kept dark).
 - Fast on mobile: lazy-load pdfjs-dist + pdf-lib only after a file is dropped
   (first paint stays tiny); pixel work off the main thread where possible;
   process one page at a time; free each canvas before the next page.
@@ -25,7 +29,7 @@ Stack: Vite + vanilla TypeScript, no framework.
 - Reject input file >= 50 MB or >= 1000 pages, with an Arabic error message.
 - Render DPI adapts within the cap (300 → 220 → 150 → 96); never reject a file
   that fits the cap, just downscale. JPEG q≈0.8 (gray mode); `bw` mode encodes
-  lossless PNG so 0/255 stays pixel-perfect.
+  lossless PNG so the exact 2-tone palette values stay pixel-perfect.
 
 ## Memory & quality model (critical)
 Browsers die on pixel count, not file size:
@@ -48,10 +52,12 @@ Browsers die on pixel count, not file size:
 2. ImageData loop: luminance → grayscale + full-scan stats + 256-bin histogram in
    ONE pass (`scanAndHistogram`). Dark pages are never re-lightened.
 3. `bw` mode: if the histogram has ≥ 2 distinct levels, split it with Otsu
-   (`otsuThreshold`) and map every pixel to pure 0/255 (`binarizePixels`), with
-   polarity honoring the dark/light decision. Uniform pages skip Otsu and just
-   invert, so a flat page never gets a random threshold. `gray` mode: light pages
-   invert (255 − luminance), dark pages stay grayscale.
+   (`otsuThreshold`) and map every pixel to one of the two palette colors
+   (`binarizePixels`), with polarity honoring the dark/light decision. Uniform
+   pages skip Otsu and map through the palette LUT, so a flat page never gets a
+   random threshold. `gray` mode: light pages map through a gamma-aware inverted
+   palette LUT (`makeNightLut`); dark pages remap monotonically into the palette
+   range (`makeDarkLut`) and are never re-lightened.
 4. Encode per mode: `bw` → PNG (`embedPng`), `gray` → JPEG q≈0.8 (`embedJpg`);
    pdf-lib builds output PDF preserving the original MediaBox.
 
@@ -74,9 +80,10 @@ Browsers die on pixel count, not file size:
 - npm test (Vitest) for the inversion + dark-detection core (pure functions)
 - npm run test:e2e (Playwright + headless Chromium) — full browser run against the
   production build: drop a 3-page PDF (2 light incl. one with an offset MediaBox,
-  1 dark-green/yellow), assert detection stats, mode default + busy-disable,
-  download filename, MediaBox preservation, bw 2-tone purity, a gray-mode re-run,
-  zero page errors, and zero CSP violations under the exact policy shipped in
+  1 dark-green/yellow), assert detection stats, mode/palette defaults +
+  busy-disable, download filename, MediaBox preservation, bw 2-tone purity, a
+  gray-mode re-run, a warm-palette re-run, zero page errors, and zero CSP
+  violations under the exact policy shipped in
   `public/_headers`. Requires `npx playwright install chromium`.
 - npm run typecheck (tsc --noEmit)
 

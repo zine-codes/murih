@@ -145,7 +145,8 @@ main {
   font-size: 0.85rem;
 }
 
-#mode {
+#mode,
+#palette {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 12px 16px;
@@ -157,13 +158,15 @@ main {
   gap: 6px 18px;
 }
 
-#mode legend {
+#mode legend,
+#palette legend {
   padding: 0 6px;
   font-size: 0.85rem;
   color: var(--muted);
 }
 
-#mode label {
+#mode label,
+#palette label {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -175,12 +178,15 @@ main {
 }
 
 #mode input:disabled + span,
-#mode label:has(input:disabled) {
+#mode label:has(input:disabled),
+#palette input:disabled + span,
+#palette label:has(input:disabled) {
   opacity: 0.55;
   cursor: default;
 }
 
-#mode input {
+#mode input,
+#palette input {
   accent-color: var(--accent);
   width: 16px;
   height: 16px;

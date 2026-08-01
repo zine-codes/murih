@@ -44,10 +44,60 @@ function startPreview() {
 
 async function hashedChunks() {
   const files = await readdir(join(DIST, 'assets'));
+  const hash = '[a-zA-Z0-9_-]+';
   return {
-    pdfChunk: files.find((f) => /^pdf-[a-z0-9]+\.js$/i.test(f)),
-    workerFile: files.find((f) => /^pdf\.worker-[a-z0-9]+\.mjs$/i.test(f)),
+    pdfChunk: files.find((f) => new RegExp(`^pdf-${hash}\\.js$`).test(f)),
+    workerFile: files.find((f) => new RegExp(`^pdf\\.worker-${hash}\\.mjs$`).test(f)),
   };
+}
+
+async function measureLum(page, pdfChunk, workerFile, outBytes, scale) {
+  return page.evaluate(
+    async ({ pdfChunk, workerFile, outBytes, scale }) => {
+      const m = await import(`/assets/${pdfChunk}`);
+      m.GlobalWorkerOptions.workerSrc = `/assets/${workerFile}`;
+      const doc = await m.getDocument({ data: new Uint8Array(outBytes) }).promise;
+      const results = [];
+      for (let i = 1; i <= doc.numPages; i++) {
+        const p = await doc.getPage(i);
+        const vp = p.getViewport({ scale });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.floor(vp.width));
+        canvas.height = Math.max(1, Math.floor(vp.height));
+        const ctx = canvas.getContext('2d');
+        await p.render({ canvasContext: ctx, canvas, viewport: vp }).promise;
+        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const w = canvas.width;
+        const h = canvas.height;
+        let sum = 0;
+        let n = 0;
+        let pure = 0;
+        let black = 0;
+        let white = 0;
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const i = (y * w + x) * 4;
+            const v = 0.2126 * img.data[i] + 0.7152 * img.data[i + 1] + 0.0722 * img.data[i + 2];
+            if (x < 3 || y < 3 || x > w - 4 || y > h - 4) {
+              sum += v;
+              n++;
+            }
+            if (v < 30) black++;
+            else if (v > 200) white++;
+            if (v < 30 || v > 200) pure++;
+          }
+        }
+        results.push({
+          lum: n === 0 ? 255 : sum / n,
+          pureFrac: pure / (w * h),
+          hasBlack: black > 0,
+          hasWhite: white > 0,
+        });
+      }
+      return results;
+    },
+    { pdfChunk, workerFile, outBytes: new Uint8Array(outBytes), scale },
+  );
 }
 
 const server = await startPreview();
@@ -140,6 +190,12 @@ try {
   if (defaultMode !== 'bw') {
     throw new Error(`mode default should be bw, got: ${JSON.stringify(defaultMode)}`);
   }
+  const defaultPalette = await page.evaluate(
+    () => document.querySelector('input[name="palette"]:checked')?.value ?? null,
+  );
+  if (defaultPalette !== 'neutral') {
+    throw new Error(`palette default should be neutral, got: ${JSON.stringify(defaultPalette)}`);
+  }
 
   await page.setInputFiles('#file', {
     name: 'input-test.pdf',
@@ -148,11 +204,11 @@ try {
   });
 
   await page.waitForSelector('#progress-wrap:not([hidden])');
-  const modeDisabledWhileBusy = await page.evaluate(() =>
-    Array.from(document.querySelectorAll('input[name="mode"]')).every((el) => el.disabled),
+  const controlsDisabledWhileBusy = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('input[name="mode"], input[name="palette"]')).every((el) => el.disabled),
   );
-  if (!modeDisabledWhileBusy) {
-    throw new Error('mode radios should be disabled while converting');
+  if (!controlsDisabledWhileBusy) {
+    throw new Error('mode/palette radios should be disabled while converting');
   }
 
   await page.waitForSelector('#result', { timeout: 90000 });
@@ -195,52 +251,7 @@ try {
     throw new Error('could not locate pdfjs chunks in dist/assets');
   }
 
-  const lum = await page.evaluate(
-    async ({ pdfChunk, workerFile, outBytes }) => {
-      const m = await import(`/assets/${pdfChunk}`);
-      m.GlobalWorkerOptions.workerSrc = `/assets/${workerFile}`;
-      const doc = await m.getDocument({ data: new Uint8Array(outBytes) }).promise;
-      const results = [];
-      for (let i = 1; i <= doc.numPages; i++) {
-        const p = await doc.getPage(i);
-        const vp = p.getViewport({ scale: 1 });
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.floor(vp.width);
-        canvas.height = Math.floor(vp.height);
-        const ctx = canvas.getContext('2d');
-        await p.render({ canvasContext: ctx, canvas, viewport: vp }).promise;
-        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const w = canvas.width;
-        const h = canvas.height;
-        let sum = 0;
-        let n = 0;
-        let pure = 0;
-        let black = 0;
-        let white = 0;
-        for (let y = 0; y < h; y++) {
-          for (let x = 0; x < w; x++) {
-            const i = (y * w + x) * 4;
-            const v = 0.2126 * img.data[i] + 0.7152 * img.data[i + 1] + 0.0722 * img.data[i + 2];
-            if (x < 3 || y < 3 || x > w - 4 || y > h - 4) {
-              sum += v;
-              n++;
-            }
-            if (v < 20) black++;
-            else if (v > 235) white++;
-            if (v < 20 || v > 235) pure++;
-          }
-        }
-        results.push({
-          lum: sum / n,
-          pureFrac: pure / (w * h),
-          hasBlack: black > 0,
-          hasWhite: white > 0,
-        });
-      }
-      return results;
-    },
-    { pdfChunk, workerFile, outBytes: new Uint8Array(outBytes) },
-  );
+  const lum = await measureLum(page, pdfChunk, workerFile, outBytes, 1);
 
   if (lum.length !== 3) throw new Error('could not render output pages');
   for (const [idx, value] of lum.entries()) {
@@ -253,44 +264,11 @@ try {
       );
     }
     if (!value.hasBlack || !value.hasWhite) {
-      throw new Error(`page ${idx + 1} missing pure black or white in bw output`);
+      throw new Error(`page ${idx + 1} missing palette bg or fg in bw output`);
     }
   }
 
-  const bwLum = await page.evaluate(
-    async ({ pdfChunk, workerFile, outBytes }) => {
-      const m = await import(`/assets/${pdfChunk}`);
-      m.GlobalWorkerOptions.workerSrc = `/assets/${workerFile}`;
-      const doc = await m.getDocument({ data: new Uint8Array(outBytes) }).promise;
-      const results = [];
-      for (let i = 1; i <= doc.numPages; i++) {
-        const p = await doc.getPage(i);
-        const vp = p.getViewport({ scale: 0.5 });
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.floor(vp.width);
-        canvas.height = Math.floor(vp.height);
-        const ctx = canvas.getContext('2d');
-        await p.render({ canvasContext: ctx, canvas, viewport: vp }).promise;
-        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const w = canvas.width;
-        const h = canvas.height;
-        let sum = 0;
-        let n = 0;
-        for (let y = 0; y < h; y += 8) {
-          for (let x = 0; x < w; x += 8) {
-            if (x < 3 || y < 3 || x > w - 4 || y > h - 4) {
-              const i = (y * w + x) * 4;
-              sum += 0.2126 * img.data[i] + 0.7152 * img.data[i + 1] + 0.0722 * img.data[i + 2];
-              n++;
-            }
-          }
-        }
-        results.push(sum / n);
-      }
-      return results;
-    },
-    { pdfChunk, workerFile, outBytes: new Uint8Array(outBytes) },
-  );
+  const bwLum = (await measureLum(page, pdfChunk, workerFile, outBytes, 0.5)).map((r) => r.lum);
 
   await page.check('input[name="mode"][value="gray"]');
   await page.setInputFiles('#file', {
@@ -305,40 +283,7 @@ try {
     page.click('#download'),
   ]);
   const grayBytes = await readFile(await grayDownload.path());
-  const grayLum2 = await page.evaluate(
-    async ({ pdfChunk, workerFile, outBytes }) => {
-      const m = await import(`/assets/${pdfChunk}`);
-      m.GlobalWorkerOptions.workerSrc = `/assets/${workerFile}`;
-      const doc = await m.getDocument({ data: new Uint8Array(outBytes) }).promise;
-      const results = [];
-      for (let i = 1; i <= doc.numPages; i++) {
-        const p = await doc.getPage(i);
-        const vp = p.getViewport({ scale: 0.5 });
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.floor(vp.width);
-        canvas.height = Math.floor(vp.height);
-        const ctx = canvas.getContext('2d');
-        await p.render({ canvasContext: ctx, canvas, viewport: vp }).promise;
-        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const w = canvas.width;
-        const h = canvas.height;
-        let sum = 0;
-        let n = 0;
-        for (let y = 0; y < h; y += 8) {
-          for (let x = 0; x < w; x += 8) {
-            if (x < 3 || y < 3 || x > w - 4 || y > h - 4) {
-              const i = (y * w + x) * 4;
-              sum += 0.2126 * img.data[i] + 0.7152 * img.data[i + 1] + 0.0722 * img.data[i + 2];
-              n++;
-            }
-          }
-        }
-        results.push(sum / n);
-      }
-      return results;
-    },
-    { pdfChunk, workerFile, outBytes: new Uint8Array(grayBytes) },
-  );
+  const grayLum2 = (await measureLum(page, pdfChunk, workerFile, grayBytes, 0.5)).map((r) => r.lum);
   for (const [idx, value] of grayLum2.entries()) {
     if (value > 64) {
       throw new Error(`gray-mode page ${idx + 1} border luminance ${value.toFixed(1)} — expected dark`);
@@ -347,6 +292,36 @@ try {
   const grayLumDiffers = bwLum.some((v, i) => Math.abs(v - grayLum2[i]) > 1);
   if (!grayLumDiffers) {
     throw new Error('gray-mode output should differ from bw output');
+  }
+
+  await page.check('input[name="mode"][value="bw"]');
+  await page.check('input[name="palette"][value="warm"]');
+  await page.setInputFiles('#file', {
+    name: 'input-test.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.from(inputBytes),
+  });
+  await page.waitForFunction(() => document.getElementById('result')?.hidden === true);
+  await page.waitForSelector('#result', { timeout: 90000 });
+  const [warmDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    page.click('#download'),
+  ]);
+  const warmBytes = await readFile(await warmDownload.path());
+  const warmLum = await measureLum(page, pdfChunk, workerFile, warmBytes, 1);
+  if (warmLum.length !== 3) throw new Error('could not render warm-mode output pages');
+  for (const [idx, value] of warmLum.entries()) {
+    if (value.lum > 64) {
+      throw new Error(`warm-mode page ${idx + 1} border luminance ${value.lum.toFixed(1)} — expected dark`);
+    }
+    if (value.pureFrac < 0.9) {
+      throw new Error(
+        `warm-mode page ${idx + 1} not 2-tone: only ${(value.pureFrac * 100).toFixed(1)}% pure`,
+      );
+    }
+    if (!value.hasBlack || !value.hasWhite) {
+      throw new Error(`warm-mode page ${idx + 1} missing palette bg or fg in output`);
+    }
   }
 
   const outSize = outBytes.length;
@@ -377,6 +352,7 @@ try {
   console.log(`  bw 2-tone:    page1=${(lum[0].pureFrac * 100).toFixed(1)}% page2=${(lum[1].pureFrac * 100).toFixed(1)}% page3=${(lum[2].pureFrac * 100).toFixed(1)}% pure`);
   console.log(`  border luminance: page1=${lum[0].lum.toFixed(1)} page2=${lum[1].lum.toFixed(1)} page3=${lum[2].lum.toFixed(1)} (all < 64)`);
   console.log(`  gray mode:    re-run OK, borders ${grayLum2.map((v) => v.toFixed(1)).join('/')} (all < 64)`);
+  console.log(`  warm palette: re-run OK, 2-tone ${warmLum.map((v) => `${(v.pureFrac * 100).toFixed(1)}%`).join('/')} pure`);
   console.log(`  CSP: ${cspViolations.length} violations under shipped policy`);
   console.log(`  PWA:  sw registered (scope ${swScope}), offline reload OK`);
 

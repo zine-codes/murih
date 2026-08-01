@@ -1,4 +1,10 @@
-import { transformImageData, type ConvertMode, type PixelStats } from './pixels';
+import {
+  isPalette,
+  transformImageData,
+  type ConvertMode,
+  type NightPalette,
+  type PixelStats,
+} from './pixels';
 
 export interface WorkerTransformResult {
   buf: ArrayBuffer;
@@ -6,7 +12,7 @@ export interface WorkerTransformResult {
 }
 
 export interface PixelWorker {
-  transform(buf: ArrayBuffer, mode: ConvertMode): Promise<WorkerTransformResult>;
+  transform(buf: ArrayBuffer, mode: ConvertMode, palette: NightPalette): Promise<WorkerTransformResult>;
   dispose(): void;
 }
 
@@ -62,9 +68,12 @@ export function createPixelWorker(): Promise<PixelWorker | null> {
     worker.onerror = () => rejectAll(new Error('pixel worker failed'));
 
     resolve({
-      transform(buf, mode) {
+      transform(buf, mode, palette) {
         if (mode !== 'bw' && mode !== 'gray') {
           return Promise.reject(new Error('pixel worker received invalid mode'));
+        }
+        if (!isPalette(palette)) {
+          return Promise.reject(new Error('pixel worker received invalid palette'));
         }
         return new Promise<WorkerTransformResult>((resolveFn, rejectFn) => {
           const id = nextId++;
@@ -81,7 +90,7 @@ export function createPixelWorker(): Promise<PixelWorker | null> {
               rejectFn(err);
             },
           });
-          worker.postMessage({ id, buf, mode }, [buf]);
+          worker.postMessage({ id, buf, mode, palette }, [buf]);
         });
       },
       dispose() {
@@ -99,9 +108,10 @@ export function transformPixelsOnMainThread(
   width: number,
   height: number,
   mode: ConvertMode,
+  palette: NightPalette,
 ): PixelStats {
   const image = ctx.getImageData(0, 0, width, height);
-  const stats = transformImageData(image.data, mode);
+  const stats = transformImageData(image.data, mode, palette);
   ctx.putImageData(image, 0, 0);
   return stats;
 }

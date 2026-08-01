@@ -3,9 +3,17 @@ import {
   DARK_FRACTION_THRESHOLD,
   DARK_LUMEN_THRESHOLD,
   NEAR_BLACK,
+  NEUTRAL_PALETTE,
+  NIGHT_GAMMA,
+  PALETTES,
+  WARM_PALETTE,
+  applyLut,
   binarizePixels,
-  invertPixels,
+  defaultPalette,
+  isPalette,
   luminance,
+  makeDarkLut,
+  makeNightLut,
   otsuThreshold,
   processImageData,
   sampleStats,
@@ -120,26 +128,89 @@ describe('processImageData', () => {
   });
 });
 
-describe('invertPixels', () => {
-  it('flips grayscale dark to light', () => {
-    const data = flat([px(0, 0, 0), px(255, 255, 255)]);
-    invertPixels(data);
-    expect(data[0]).toBe(255);
-    expect(data[1]).toBe(255);
-    expect(data[2]).toBe(255);
-    expect(data[4]).toBe(0);
-    expect(data[5]).toBe(0);
-    expect(data[6]).toBe(0);
+describe('night palettes', () => {
+  it('defaults to the neutral palette', () => {
+    expect(defaultPalette()).toBe(NEUTRAL_PALETTE);
   });
 
-  it('double application restores the grayscale', () => {
-    const data = flat([px(10, 10, 10), px(200, 200, 200)]);
-    invertPixels(data);
-    expect(data[0]).toBe(245);
-    expect(data[4]).toBe(55);
-    invertPixels(data);
-    expect(data[0]).toBe(10);
-    expect(data[4]).toBe(200);
+  it('exposes exactly neutral and warm', () => {
+    expect(PALETTES.map((p) => p.id)).toEqual(['neutral', 'warm']);
+  });
+
+  it('isPalette accepts only well-formed 3-channel palettes', () => {
+    expect(isPalette(NEUTRAL_PALETTE)).toBe(true);
+    expect(isPalette(WARM_PALETTE)).toBe(true);
+    expect(isPalette(null)).toBe(false);
+    expect(isPalette({ bg: [1, 2, 3], fg: [4, 5, 6] })).toBe(false);
+    expect(isPalette({ id: 'neutral', bg: [1, 2], fg: [4, 5, 6] })).toBe(false);
+    expect(isPalette({ id: 'neutral', bg: [1, 2, 300], fg: [4, 5, 6] })).toBe(false);
+    expect(isPalette({ id: 'neutral', bg: [1, 2, 3], fg: [4, 5, 6] })).toBe(true);
+  });
+
+  it('neutral palette is a strict 2-tone near-black/off-white', () => {
+    expect(NEUTRAL_PALETTE.bg).toEqual([0x12, 0x12, 0x12]);
+    expect(NEUTRAL_PALETTE.fg).toEqual([0xe6, 0xe6, 0xe6]);
+  });
+});
+
+describe('makeNightLut', () => {
+  it('maps black to fg and white to bg (inverted endpoints)', () => {
+    const lut = makeNightLut(NEUTRAL_PALETTE);
+    expect(lut[0]).toEqual(NEUTRAL_PALETTE.fg);
+    expect(lut[255]).toEqual(NEUTRAL_PALETTE.bg);
+  });
+
+  it('is monotonically decreasing with luminance', () => {
+    const lut = makeNightLut(NEUTRAL_PALETTE, NIGHT_GAMMA);
+    for (let l = 1; l < 256; l++) {
+      expect(lut[l][0]).toBeLessThanOrEqual(lut[l - 1][0]);
+      expect(lut[l][1]).toBeLessThanOrEqual(lut[l - 1][1]);
+      expect(lut[l][2]).toBeLessThanOrEqual(lut[l - 1][2]);
+    }
+  });
+
+  it('is linear by default (gamma 1.0 keeps faded text readable)', () => {
+    const lut = makeNightLut(NEUTRAL_PALETTE);
+    const linear = NEUTRAL_PALETTE.bg[0] + (NEUTRAL_PALETTE.fg[0] - NEUTRAL_PALETTE.bg[0]) * 0.5;
+    expect(lut[128][0]).toBe(Math.round(linear));
+  });
+
+  it('a gamma > 1 pulls mid-tones toward the background (darker than linear)', () => {
+    const lut = makeNightLut(NEUTRAL_PALETTE, 2);
+    const linear = NEUTRAL_PALETTE.bg[0] + (NEUTRAL_PALETTE.fg[0] - NEUTRAL_PALETTE.bg[0]) * 0.5;
+    expect(lut[128][0]).toBeLessThan(linear);
+  });
+
+  it('honors a custom gamma', () => {
+    const flat = makeNightLut(NEUTRAL_PALETTE, 1);
+    expect(flat[128][0]).toBe(Math.round(18 + (230 - 18) * 0.5));
+  });
+});
+
+describe('makeDarkLut', () => {
+  it('keeps dark pages dark: black→bg, white→fg (monotonic increasing)', () => {
+    const lut = makeDarkLut(NEUTRAL_PALETTE);
+    expect(lut[0]).toEqual(NEUTRAL_PALETTE.bg);
+    expect(lut[255]).toEqual(NEUTRAL_PALETTE.fg);
+    for (let l = 1; l < 256; l++) {
+      expect(lut[l][0]).toBeGreaterThanOrEqual(lut[l - 1][0]);
+    }
+  });
+
+  it('remaps a near-black page into the palette range', () => {
+    const lut = makeDarkLut(NEUTRAL_PALETTE);
+    expect(lut[5][0]).toBe(22);
+  });
+});
+
+describe('applyLut', () => {
+  it('writes the palette triplets per pixel and keeps alpha', () => {
+    const data = new Uint8ClampedArray([0, 0, 0, 99, 255, 255, 255, 255]);
+    applyLut(data, makeNightLut(NEUTRAL_PALETTE));
+    expect(Array.from(data)).toEqual([
+      230, 230, 230, 99,
+      18, 18, 18, 255,
+    ]);
   });
 });
 
@@ -182,21 +253,35 @@ describe('otsuThreshold', () => {
 });
 
 describe('binarizePixels', () => {
-  it('maps light pages to white-on-black', () => {
+  it('maps light pages to the night palette (bright→bg, dark→fg)', () => {
     const data = flat([px(0, 0, 0), px(255, 255, 255), px(128, 128, 128)]);
     binarizePixels(data, 128, false);
-    expect(Array.from(data)).toEqual([255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 255]);
+    expect(Array.from(data)).toEqual([
+      230, 230, 230, 255,
+      18, 18, 18, 255,
+      18, 18, 18, 255,
+    ]);
   });
 
-  it('maps dark pages to pure black (never re-lightened)', () => {
+  it('maps dark pages to the night palette (never re-lightened)', () => {
     const data = flat([px(0, 0, 0), px(255, 255, 255), px(128, 128, 128)]);
     binarizePixels(data, 128, true);
-    expect(Array.from(data)).toEqual([0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255]);
+    expect(Array.from(data)).toEqual([
+      18, 18, 18, 255,
+      230, 230, 230, 255,
+      230, 230, 230, 255,
+    ]);
+  });
+
+  it('uses the warm palette when requested', () => {
+    const data = flat([px(0, 0, 0), px(255, 255, 255)]);
+    binarizePixels(data, 128, false, WARM_PALETTE);
+    expect(Array.from(data)).toEqual([235, 227, 207, 255, 24, 21, 18, 255]);
   });
 });
 
 describe('transformImageData', () => {
-  it('bw: dark-green page with yellow text becomes pure black/white', () => {
+  it('bw: dark-green page with yellow text becomes pure palette bg/fg', () => {
     const bg = px(0, 40, 0);
     const text = px(255, 240, 0);
     const data = flat([
@@ -209,14 +294,14 @@ describe('transformImageData', () => {
     const values = new Set<number>();
     for (let i = 0; i < data.length; i += 4) values.add(data[i]);
     expect(values.size).toBe(2);
-    expect(values.has(0)).toBe(true);
-    expect(values.has(255)).toBe(true);
-    expect(data[0]).toBe(0);
+    expect(values.has(NEUTRAL_PALETTE.bg[0])).toBe(true);
+    expect(values.has(NEUTRAL_PALETTE.fg[0])).toBe(true);
+    expect(data[0]).toBe(NEUTRAL_PALETTE.bg[0]);
     const textPx = data.slice(16, 19);
-    expect(Array.from(textPx)).toEqual([255, 255, 255]);
+    expect(Array.from(textPx)).toEqual([...NEUTRAL_PALETTE.fg]);
   });
 
-  it('bw: white page with black text stays black-on-white', () => {
+  it('bw: white page with black text becomes bg/fg on the night palette', () => {
     const data = flat([
       px(255, 255, 255), px(255, 255, 255), px(255, 255, 255), px(255, 255, 255),
       px(255, 255, 255), px(255, 255, 255), px(255, 255, 255), px(255, 255, 255),
@@ -230,26 +315,40 @@ describe('transformImageData', () => {
       }
       return out;
     };
-    expect(rgb(0, 8).every((v) => v === 0)).toBe(true);
-    expect(rgb(8, 10).every((v) => v === 255)).toBe(true);
+    expect(rgb(0, 8).every((v) => v === NEUTRAL_PALETTE.bg[0])).toBe(true);
+    expect(rgb(8, 10).every((v) => v === NEUTRAL_PALETTE.fg[0])).toBe(true);
   });
 
-  it('bw: uniform page falls back to inversion instead of a random threshold', () => {
-    const data = flat([px(0, 0, 0)]);
-    transformImageData(data, 'bw');
-    expect(Array.from(data)).toEqual([0, 0, 0, 255]);
+  it('bw: uniform page falls back to a palette map instead of a random threshold', () => {
+    const dark = flat([px(0, 0, 0)]);
+    transformImageData(dark, 'bw');
+    expect(Array.from(dark)).toEqual([...NEUTRAL_PALETTE.bg, 255]);
     const light = flat([px(240, 240, 240)]);
     transformImageData(light, 'bw');
-    expect(Array.from(light)).toEqual([15, 15, 15, 255]);
+    const t = 1 - (240 / 255) ** (1 / NIGHT_GAMMA);
+    const v = Math.round(NEUTRAL_PALETTE.bg[0] + (NEUTRAL_PALETTE.fg[0] - NEUTRAL_PALETTE.bg[0]) * t);
+    expect(Array.from(light)).toEqual([v, v, v, 255]);
   });
 
-  it('gray: keeps 256-level grayscale behavior (no binarization)', () => {
+  it('bw: dark pages are remapped into the chosen palette, never re-lightened', () => {
+    const dark = flat([px(5, 5, 5), px(5, 5, 5), px(200, 200, 200), px(200, 200, 200)]);
+    const stats = transformImageData(dark, 'bw', WARM_PALETTE);
+    expect(stats.isDark).toBe(true);
+    const values = new Set<number>();
+    for (let i = 0; i < dark.length; i += 4) values.add(dark[i]);
+    expect(values).toEqual(new Set([WARM_PALETTE.bg[0], WARM_PALETTE.fg[0]]));
+    expect(dark[0]).toBe(WARM_PALETTE.bg[0]);
+  });
+
+  it('gray: keeps tonal behavior (no binarization) and tints dark pages into the palette', () => {
     const bg = px(0, 40, 0);
     const text = px(255, 240, 0);
     const data = flat([bg, bg, bg, text]);
     const stats = transformImageData(data, 'gray');
     expect(stats.isDark).toBe(true);
-    expect(data[0]).toBe(Math.round(0.7152 * 40));
+    const bgLut = makeDarkLut(NEUTRAL_PALETTE);
+    const bgVal = Math.round(luminance(0, 40, 0));
+    expect(data[0]).toBe(bgLut[bgVal][0]);
     const values = new Set<number>();
     for (let i = 0; i < data.length; i += 4) values.add(data[i]);
     expect(values.size).toBe(2);
@@ -257,10 +356,10 @@ describe('transformImageData', () => {
     expect(values.has(255)).toBe(false);
   });
 
-  it('gray: light page is inverted to dark', () => {
+  it('gray: light page is inverted onto the palette', () => {
     const data = flat([px(0, 0, 0), px(255, 255, 255)]);
     transformImageData(data, 'gray');
-    expect(Array.from(data)).toEqual([255, 255, 255, 255, 0, 0, 0, 255]);
+    expect(Array.from(data)).toEqual([...NEUTRAL_PALETTE.fg, 255, ...NEUTRAL_PALETTE.bg, 255]);
   });
 });
 
