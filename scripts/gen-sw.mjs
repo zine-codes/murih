@@ -58,6 +58,22 @@ const base = self.registration.scope;
 const SHELL = ${JSON.stringify(shell)}.map((p) => new URL(p, base).href);
 const indexUrl = new URL("./index.html", base).href;
 
+const isAppAsset = (url) => {
+  const p = url.pathname;
+  return (
+    p === "/" ||
+    p.endsWith("/index.html") ||
+    p.startsWith("/assets/") ||
+    p.startsWith("/cmaps/") ||
+    p.startsWith("/wasm/") ||
+    p.endsWith("/manifest.webmanifest") ||
+    p.endsWith("/favicon.svg") ||
+    p.includes("/pwa-") ||
+    p.includes("/maskable-") ||
+    p.endsWith("/apple-touch-icon.png")
+  );
+};
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()),
@@ -98,7 +114,7 @@ self.addEventListener('fetch', (event) => {
     caches.match(request).then((cached) => {
       const network = fetch(request)
         .then((response) => {
-          if (response && response.status === 200) {
+          if (response && response.status === 200 && isAppAsset(url)) {
             const copy = response.clone();
             caches.open(CACHE).then((cache) => cache.put(request, copy));
           }

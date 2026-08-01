@@ -3,10 +3,14 @@ import {
   DARK_FRACTION_THRESHOLD,
   DARK_LUMEN_THRESHOLD,
   NEAR_BLACK,
+  binarizePixels,
   invertPixels,
   luminance,
+  otsuThreshold,
   processImageData,
   sampleStats,
+  scanAndHistogram,
+  transformImageData,
 } from '../src/pixels';
 
 function px(r: number, g: number, b: number): number[] {
@@ -136,6 +140,127 @@ describe('invertPixels', () => {
     invertPixels(data);
     expect(data[0]).toBe(10);
     expect(data[4]).toBe(200);
+  });
+});
+
+describe('scanAndHistogram', () => {
+  it('returns grayscaled data plus a matching histogram', () => {
+    const data = flat([px(255, 255, 0), px(0, 255, 255)]);
+    const { stats, hist } = scanAndHistogram(data);
+    const g1 = Math.round(0.2126 * 255 + 0.7152 * 255);
+    const g2 = Math.round(0.7152 * 255 + 0.0722 * 255);
+    expect(data[0]).toBe(g1);
+    expect(data[4]).toBe(g2);
+    expect(stats.isDark).toBe(false);
+    expect(hist[g1]).toBe(1);
+    expect(hist[g2]).toBe(1);
+    expect(hist.reduce((a, b) => a + b, 0)).toBe(2);
+  });
+});
+
+describe('otsuThreshold', () => {
+  it('splits a clean bimodal histogram near the valley', () => {
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < 100; i++) hist[i]++;
+    for (let i = 200; i < 256; i++) hist[i]++;
+    const thr = otsuThreshold(hist);
+    expect(thr).toBeGreaterThanOrEqual(90);
+    expect(thr).toBeLessThanOrEqual(210);
+  });
+
+  it('returns a sane fallback for empty histograms', () => {
+    expect(otsuThreshold(new Uint32Array(256))).toBe(127);
+  });
+
+  it('does not crash on a degenerate single-value histogram', () => {
+    const hist = new Uint32Array(256);
+    hist[42] = 1000;
+    const thr = otsuThreshold(hist);
+    expect(thr).toBeGreaterThanOrEqual(0);
+    expect(thr).toBeLessThanOrEqual(255);
+  });
+});
+
+describe('binarizePixels', () => {
+  it('maps light pages to white-on-black', () => {
+    const data = flat([px(0, 0, 0), px(255, 255, 255), px(128, 128, 128)]);
+    binarizePixels(data, 128, false);
+    expect(Array.from(data)).toEqual([255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 255]);
+  });
+
+  it('maps dark pages to pure black (never re-lightened)', () => {
+    const data = flat([px(0, 0, 0), px(255, 255, 255), px(128, 128, 128)]);
+    binarizePixels(data, 128, true);
+    expect(Array.from(data)).toEqual([0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255]);
+  });
+});
+
+describe('transformImageData', () => {
+  it('bw: dark-green page with yellow text becomes pure black/white', () => {
+    const bg = px(0, 40, 0);
+    const text = px(255, 240, 0);
+    const data = flat([
+      bg, bg, bg, bg,
+      text, text, text, text,
+      bg, bg, bg, bg,
+    ]);
+    const stats = transformImageData(data, 'bw');
+    expect(stats.isDark).toBe(true);
+    const values = new Set<number>();
+    for (let i = 0; i < data.length; i += 4) values.add(data[i]);
+    expect(values.size).toBe(2);
+    expect(values.has(0)).toBe(true);
+    expect(values.has(255)).toBe(true);
+    expect(data[0]).toBe(0);
+    const textPx = data.slice(16, 19);
+    expect(Array.from(textPx)).toEqual([255, 255, 255]);
+  });
+
+  it('bw: white page with black text stays black-on-white', () => {
+    const data = flat([
+      px(255, 255, 255), px(255, 255, 255), px(255, 255, 255), px(255, 255, 255),
+      px(255, 255, 255), px(255, 255, 255), px(255, 255, 255), px(255, 255, 255),
+      px(0, 0, 0), px(0, 0, 0),
+    ]);
+    transformImageData(data, 'bw');
+    const rgb = (from: number, to: number): number[] => {
+      const out: number[] = [];
+      for (let i = from; i < to; i++) {
+        out.push(data[4 * i], data[4 * i + 1], data[4 * i + 2]);
+      }
+      return out;
+    };
+    expect(rgb(0, 8).every((v) => v === 0)).toBe(true);
+    expect(rgb(8, 10).every((v) => v === 255)).toBe(true);
+  });
+
+  it('bw: uniform page falls back to inversion instead of a random threshold', () => {
+    const data = flat([px(0, 0, 0)]);
+    transformImageData(data, 'bw');
+    expect(Array.from(data)).toEqual([0, 0, 0, 255]);
+    const light = flat([px(240, 240, 240)]);
+    transformImageData(light, 'bw');
+    expect(Array.from(light)).toEqual([15, 15, 15, 255]);
+  });
+
+  it('gray: keeps 256-level grayscale behavior (no binarization)', () => {
+    const bg = px(0, 40, 0);
+    const text = px(255, 240, 0);
+    const data = flat([bg, bg, bg, text]);
+    const stats = transformImageData(data, 'gray');
+    expect(stats.isDark).toBe(true);
+    expect(data[0]).toBe(Math.round(0.7152 * 40));
+    const values = new Set<number>();
+    for (let i = 0; i < data.length; i += 4) values.add(data[i]);
+    expect(values.size).toBe(2);
+    expect(values.has(0)).toBe(false);
+    expect(values.has(255)).toBe(false);
+  });
+
+  it('gray: light page is inverted to dark', () => {
+    const data = flat([px(0, 0, 0), px(255, 255, 255)]);
+    transformImageData(data, 'gray');
+    expect(Array.from(data)).toEqual([255, 255, 255, 255, 0, 0, 0, 255]);
   });
 });
 

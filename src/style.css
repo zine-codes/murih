@@ -134,6 +134,59 @@ main {
   border-radius: 2px;
 }
 
+.drop-hint {
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.drop-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+#mode {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 18px;
+}
+
+#mode legend {
+  padding: 0 6px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+#mode label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 4px 0;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#mode input:disabled + span,
+#mode label:has(input:disabled) {
+  opacity: 0.55;
+  cursor: default;
+}
+
+#mode input {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
 #status {
   background: var(--card);
   border: 1px solid var(--err);
@@ -222,6 +275,23 @@ button.primary {
 
 [hidden] {
   display: none !important;
+}
+
+footer {
+  margin-top: auto;
+  padding-top: 32px;
+  text-align: center;
+  font-size: 0.85rem;
+}
+
+footer a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+footer a:hover {
+  color: var(--text);
+  text-decoration: underline;
 }
 
 @media (prefers-reduced-motion: reduce) {

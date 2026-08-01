@@ -1,95 +1,130 @@
 # مريح (Murih)
 
-Client-side PDF → dark-mode converter. Drop a PDF, download a dark-mode version.
-100% client-side: files never leave the device. Arabic (RTL) UI.
+> **حوّل ملفات PDF إلى الوضع الداكن — دون رفعها من جهازك.**
+> **Turn PDFs into dark mode — without ever uploading them.**
 
-Built with Vite + vanilla TypeScript. Static site, build output in `dist/`.
+**Murih** is a small web app that takes any PDF and gives you back a dark-mode
+version you can download. Drop a file, pick a mode, download the result. That's it.
 
-## How it works
+Everything runs in your browser — **100% client-side**. Your documents never leave
+your device, no account, no sign-up, no tracking.
 
-The core pipeline (per page, one page at a time):
+## What makes it different
 
-1. **Load** — `pdfjs-dist` (v6) parses the file with `cmaps/` (Arabic/CJK glyphs) and
-   `wasm/` (JBIG2 / JPEG2000 / ICC support) served from the same origin.
-2. **Render** — each page renders to a `<canvas>` at a DPI that adapts to the file
-   (300 → 220 → 150 → 96 as page count grows) and is clamped so no canvas ever
-   exceeds ~16.7 MP (iOS Safari canvas cap) or a 16,384 px dimension.
-3. **Grayscale + detect** — every pixel is converted to luminance (Rec. 709).
-   A page is "dark" when mean luminance < 127 **or** more than 50% of pixels are
-   near-black (< 64). The decision uses a full-pixel scan, so an already-dark page
-   is never re-lightened.
-4. **Invert** — light pages are flipped (255 − luminance) into dark mode; dark
-   pages are left dark. Output is 256-level grayscale, not 2-tone.
-5. **Encode** — the canvas becomes a JPEG (quality 0.8) and is embedded with
-   `pdf-lib`, preserving the original MediaBox. All raster pages are then saved
-   into one PDF.
+- **Zero uploads, zero backend.** Files are processed locally with your own CPU.
+  Nothing is sent to any server — not the file, not a thumbnail, not analytics.
+- **Fast on mobile.** The heavy libraries (pdf.js, pdf-lib) load only after you
+  drop a file, so the app opens instantly. Pixel work runs off the main thread in
+  a Web Worker; one page is processed at a time to keep memory low.
+- **Installable + offline.** It's a PWA: add it to your home screen, and once
+  you've converted online the app keeps working offline too.
+- **Arabic (RTL) UI.** The interface is in Arabic, right-to-left.
 
-Text in the output is not selectable — output is rasterized. That is an accepted
-tradeoff for speed and reliability.
+## How to use it
 
-## File map
+1. Open the app.
+2. Choose a mode (see below).
+3. Drop your PDF onto the page (or tap to pick it).
+4. Download the converted dark-mode PDF.
 
-| File | Purpose |
+### The two modes
+
+| Mode | What it does | Best for |
+| --- | --- | --- |
+| **أبيض وأسود فقط (نصوص)** — `bw` (default) | Every pixel becomes pure black or pure white using Otsu's method (a per-page threshold). Output is crisp 2-tone; colored pages (e.g. dark-green background + yellow text) come out clean instead of a gray mess. | Text documents, forms, papers |
+| **تدرج رمادي (مستندات تحتوي صورًا)** — `gray` | Keeps 256 levels of grayscale. Light pages are flipped into dark mode, dark pages stay dark. | Documents with photos or graphics |
+
+In both modes, pages that are already dark are **never re-lightened** — they're
+kept dark.
+
+## Limits
+
+To keep things reliable on phones, files are capped at:
+
+- **50 MB**
+- **1000 pages**
+
+If your file fits, the render resolution adapts automatically (300 → 220 → 150 →
+96 DPI) so a large document still converts without crashing the tab.
+
+**Note:** the output PDF is made of rasterized page images, so text in the
+converted file is **not selectable**. That's a deliberate trade-off for speed and
+reliability.
+
+## Privacy
+
+This is the whole point of the project:
+
+- No uploads. The file is read entirely in your browser.
+- No network calls at runtime — fonts, pdf.js, and its decoders are all self-hosted.
+- A strict Content-Security-Policy blocks any third-party scripts.
+- The service worker caches only the app's own assets; your PDFs and downloads
+  (blob URLs) are never stored.
+
+## How it works (for the curious)
+
+1. **Parse** — pdf.js (v6) reads the file, with Arabic/CJK support (`cmaps`) and
+   JBIG2/JPEG2000/ICC decoding (`wasm`), all same-origin.
+2. **Render** — each page renders to a `<canvas>` at an adaptive DPI, clamped so no
+   canvas exceeds the iOS Safari limit (~16.7 MP).
+3. **Grayscale + detect** — one pass converts every pixel to luminance (Rec. 709),
+   builds a histogram, and classifies the page as light or dark.
+4. **Binarize or invert** — `bw` splits the histogram with Otsu and maps every
+   pixel to pure 0/255; `gray` inverts light pages and keeps dark pages as-is.
+5. **Encode** — `bw` pages become lossless PNG, `gray` pages JPEG (q≈0.8), and
+   `pdf-lib` assembles the output PDF, preserving the original page size (MediaBox).
+
+## Tech stack
+
+- [Vite](https://vitejs.dev) + vanilla TypeScript — no framework
+- [pdf.js](https://github.com/mozilla/pdf.js) — parsing & rendering
+- [pdf-lib](https://github.com/Hopding/pdf-lib) — output PDF generation
+- Web Worker — off-main-thread pixel processing
+- Deployed as a static site on Cloudflare Pages
+
+## Project layout
+
+| Path | Purpose |
 | --- | --- |
-| `src/main.ts` | UI glue: drop/pick, cancel (per-run `AbortController`), progress bar, error mapping, download (blob URL, revoked on reset/`pagehide`). |
-| `src/converter.ts` | The conversion driver. Lazy-loads pdf.js + pdf-lib only after a file is dropped. Owns the page loop, worker fallback, and MediaBox preservation. |
-| `src/processPage` (`converter.ts`) | One page: render → transform → JPEG → embed into the output document. |
-| `src/pixels.ts` | Pure pixel math: luminance, grayscale, `invertPixels`, and the dark/light classifier (shared with unit tests). |
-| `src/pixel.worker.ts` | Web Worker entry: computes full-scan stats, inverts only if light, returns the transformed buffer. |
-| `src/transform.ts` | Worker wrapper: message validation, 30 s timeout, dispose; plus the main-thread fallback used when a worker can't be created or fails. |
-| `src/limits.ts` | Owner-specified hard limits (50 MB, 1000 pages) and the canvas scaling/clamping math. |
-| `scripts/copy-assets.mjs` | Copies pdf.js `cmaps/` + `wasm/` into `public/` (runs on `npm install`). |
-| `scripts/e2e-smoke.mjs` | Playwright e2e against the production build. |
-| `scripts/generate-icons.mjs` | Pure-Node (zero deps) PWA icon generator (`npm run icons`). |
-| `scripts/gen-sw.mjs` | Postbuild step: scans `dist/` and writes `dist/sw.js` (precached shell + runtime cache). |
-| `public/manifest.webmanifest` | PWA manifest (Arabic, `standalone`, icons). |
-| `public/_headers` | Security headers incl. CSP (see below). |
-
-## Memory & quality model
-
-Browsers die on pixel count, not file size:
-
-- iOS Safari blanks any canvas above 16,777,216 px (iOS < 18). Every render canvas
-  is clamped below that.
-- A 300 DPI A4 page is ~34 MB of RGBA; pdf.js allocates a second buffer while
-  rendering, so peak per-page is ~2 canvases + one JPEG blob.
-- `pdf-lib` holds the **entire** output document plus every page image in RAM until
-  `save()`.
-- That's why only one page is processed at a time and each canvas is freed
-  (`canvas.width = 0`) before the next page.
-
-## Security
-
-- Zero network calls at runtime: no CDN fonts, no analytics, no backend. pdf.js
-  worker, cmaps, and wasm are all self-hosted.
-- A strict Content-Security-Policy is shipped via `public/_headers`
-  (`'wasm-unsafe-eval'` is required for pdf.js's WebAssembly decoders).
-- No `innerHTML`/`eval`; the only object URLs are downloads, revoked on reset and
-  `pagehide`.
-- The e2e run injects the exact shipped CSP and fails on any policy violation.
-
-## PWA (installable, offline-capable)
-
-The app is an installable PWA:
-
-- **Installable** — web manifest (Arabic, `standalone` mode) + self-hosted icons
-  (`public/pwa-*.png`, `maskable-512.png`, `apple-touch-icon.png`). Android/Chrome
-  shows an install prompt; iOS uses "Add to Home Screen".
-- **Offline** — `dist/sw.js` precaches the app shell (index.html + entry assets +
-  icons) and the wasm decoders, so the app loads offline immediately. pdf.js/pdf-lib
-  chunks and `cmaps/` are cached on first use (stale-while-revalidate); offline
-  conversion works once the needed libraries were cached during an online run.
-- **Privacy preserved** — the service worker caches only the app's own static
-  assets. Input PDFs and generated output (blob URLs) are never cached or stored.
+| `src/main.ts` | UI glue: drop/pick, cancel (per-run `AbortController`), progress bar, error messages, download. |
+| `src/converter.ts` | The conversion driver. Lazy-loads pdf.js + pdf-lib only after a file is dropped; owns the page loop, worker fallback, and MediaBox preservation. |
+| `src/pixels.ts` | Pure pixel math: luminance, stats classifier, Otsu threshold, binarize, per-mode transform (shared with unit tests). |
+| `src/pixel.worker.ts` | Web Worker entry: full-scan stats + transform per mode, returns the transferred buffer. |
+| `src/transform.ts` | Worker wrapper: message validation, 30 s timeout, dispose; plus a main-thread fallback. |
+| `src/limits.ts` | Hard limits (50 MB, 1000 pages) and canvas scaling/clamping math. |
+| `scripts/e2e-smoke.mjs` | Playwright end-to-end test against the production build. |
+| `scripts/gen-sw.mjs` | Generates the service worker (`dist/sw.js`) after each build. |
+| `public/_headers` | Security headers incl. the Content-Security-Policy. |
 
 ## Development
 
 ```sh
-npm install            # also runs copy-assets → public/cmaps + public/wasm
+npm install            # also copies pdf.js cmaps + wasm into public/
 npm run dev            # local dev server
-npm test               # Vitest: pixel math + limits + pure helpers
+npm test               # unit tests (pixel math, limits, helpers)
 npm run typecheck      # tsc --noEmit
-npm run test:e2e       # build + Playwright smoke test (needs: npx playwright install chromium)
-npm run build          # tsc --noEmit && vite build && gen-sw → dist/
+npm run test:e2e       # build + full browser e2e (needs: npx playwright install chromium)
+npm run build          # typecheck + vite build + generate service worker → dist/
 npm run icons          # regenerate PWA icons into public/
 ```
+
+## Deploying
+
+It's a static site. Build it, then point any static host at `dist/`:
+
+- **Cloudflare Pages** — build command `npm run build`, build output directory
+  `dist/`. `public/_headers` is copied into `dist/` and applies the security
+  headers automatically. Enable **HSTS** either in the `_headers` file (already
+  shipped) *or* in the Cloudflare dashboard — not both.
+
+## Background behavior
+
+- Pages render with `intent: 'print'`, so conversion keeps going even when you
+  switch tabs (the default `'display'` intent pauses when the tab is hidden).
+- The pixel worker lives only for the duration of a conversion.
+- Not preventable: iOS Safari may suspend background tabs, and closing the browser
+  kills the tab.
+
+## Contact
+
+Feedback, feature requests, or bug reports: send.zine@gmail.com

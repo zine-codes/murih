@@ -1,6 +1,7 @@
 import './style.css';
 import { convertPdf } from './converter';
 import { MAX_FILE_BYTES, MAX_PAGES } from './limits';
+import type { ConvertMode } from './pixels';
 
 const STR = {
   converting: 'جارٍ التحويل…',
@@ -31,9 +32,16 @@ const resultEl = document.getElementById('result')!;
 const doneText = document.getElementById('done-text')!;
 const statsEl = document.getElementById('stats')!;
 const downloadBtn = document.getElementById('download') as HTMLButtonElement;
+const modeInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="mode"]'));
 
 let currentAbort: AbortController | null = null;
 let resultUrl: string | null = null;
+
+function selectedMode(): ConvertMode {
+  return (document.querySelector<HTMLInputElement>('input[name="mode"]:checked')?.value ?? 'bw') === 'bw'
+    ? 'bw'
+    : 'gray';
+}
 
 function cancelCurrent(): void {
   currentAbort?.abort();
@@ -47,7 +55,9 @@ function resetUi(): void {
   progressWrap.hidden = true;
   progressBar.style.width = '0%';
   progressBar.setAttribute('aria-valuenow', '0');
+  progressText.textContent = '';
   dropzone.classList.remove('disabled');
+  for (const input of modeInputs) input.disabled = false;
   if (resultUrl) {
     URL.revokeObjectURL(resultUrl);
     resultUrl = null;
@@ -58,6 +68,7 @@ function setBusy(busy: boolean): void {
   dropzone.classList.toggle('disabled', busy);
   dropzone.setAttribute('aria-disabled', String(busy));
   dropzone.setAttribute('aria-busy', String(busy));
+  for (const input of modeInputs) input.disabled = busy;
   progressWrap.hidden = !busy;
 }
 
@@ -81,6 +92,7 @@ function runConversion(file: File): void {
 
   convertPdf({
     file,
+    mode: selectedMode(),
     onProgress: (done, totalPages) => {
       if (abort.signal.aborted) return;
       const pct = Math.round((done / totalPages) * 100);
@@ -110,18 +122,12 @@ function runConversion(file: File): void {
     })
     .catch((err) => {
       if (abort.signal.aborted) {
-        resetUi();
+        if (currentAbort === abort) resetUi();
         return;
       }
       setBusy(false);
       const code = err?.code ?? 'unknown';
-      let message = STR.errors[code as keyof typeof STR.errors] ?? STR.errors.unknown;
-      if (code === 'unknown' && /password/i.test(String(err?.message ?? ''))) {
-        message = STR.errors.encrypted;
-      }
-      if (message === STR.errors.unknown && /Invalid PDF|format/i.test(String(err?.message ?? ''))) {
-        message = STR.errors.notPdf;
-      }
+      const message = STR.errors[code as keyof typeof STR.errors] ?? STR.errors.unknown;
       showError(message);
     })
     .finally(() => {

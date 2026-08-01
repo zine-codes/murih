@@ -1,6 +1,6 @@
 import type * as pdfjsType from 'pdfjs-dist';
 import type { PDFDocument } from 'pdf-lib';
-import { type PixelStats } from './pixels';
+import { type ConvertMode, type PixelStats } from './pixels';
 import {
   JPEG_QUALITY,
   baseScale,
@@ -26,6 +26,7 @@ export class AppError extends Error {
 
 export interface ConvertOptions {
   file: File;
+  mode: ConvertMode;
   onProgress: (done: number, total: number) => void;
   shouldCancel: () => boolean;
 }
@@ -72,7 +73,7 @@ function loadPdfLib(): Promise<typeof import('pdf-lib')> {
 }
 
 export async function convertPdf(options: ConvertOptions): Promise<ConvertResult> {
-  const { file, onProgress, shouldCancel } = options;
+  const { file, mode, onProgress, shouldCancel } = options;
   if (!fileWithinLimits(file.size)) throw new AppError('fileTooLarge');
 
   const pdfjs = await loadPdfjs();
@@ -110,6 +111,7 @@ export async function convertPdf(options: ConvertOptions): Promise<ConvertResult
         base,
         worker,
         workerOk,
+        mode,
         shouldCancel,
       );
       workerOk = ok;
@@ -122,6 +124,14 @@ export async function convertPdf(options: ConvertOptions): Promise<ConvertResult
     if (shouldCancel()) throw new AppError('cancelled');
   } catch (err) {
     if (err instanceof AppError) throw err;
+    const name = (err as { name?: string })?.name;
+    const message = err instanceof Error ? err.message : String(err ?? '');
+    if (name === 'PasswordException' || /password/i.test(message)) {
+      throw new AppError('encrypted', err);
+    }
+    if (name === 'InvalidPDFException' || /Invalid PDF|format/i.test(message)) {
+      throw new AppError('notPdf', err);
+    }
     throw new AppError('unknown', err);
   } finally {
     worker?.dispose();
@@ -138,6 +148,7 @@ async function processPage(
   base: number,
   worker: PixelWorker | null,
   workerOk: boolean,
+  mode: ConvertMode,
   shouldCancel: () => boolean,
 ): Promise<{ stats: PixelStats; workerOk: boolean }> {
   if (shouldCancel()) throw new AppError('cancelled');
@@ -153,10 +164,10 @@ async function processPage(
   canvas.width = width;
   canvas.height = height;
 
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) throw new AppError('noCanvas');
 
-  const renderTask = page.render({ canvasContext: ctx, canvas, viewport });
+  const renderTask = page.render({ canvasContext: ctx, canvas, viewport, intent: 'print' });
   const cancelWatch = setInterval(() => {
     if (shouldCancel()) {
       try {
@@ -179,28 +190,31 @@ async function processPage(
   if (worker && workerOk) {
     const image = ctx.getImageData(0, 0, width, height);
     try {
-      const { buf, stats: fullStats } = await worker.transform(image.data.buffer);
+      const { buf, stats: fullStats } = await worker.transform(image.data.buffer, mode);
       ctx.putImageData(new ImageData(new Uint8ClampedArray(buf), width, height), 0, 0);
       stats = fullStats;
     } catch {
       workerOk = false;
-      stats = transformPixelsOnMainThread(ctx, width, height);
+      stats = transformPixelsOnMainThread(ctx, width, height, mode);
     }
   } else {
-    stats = transformPixelsOnMainThread(ctx, width, height);
+    stats = transformPixelsOnMainThread(ctx, width, height, mode);
   }
 
+  if (shouldCancel()) throw new AppError('cancelled');
+  const mime = mode === 'bw' ? 'image/png' : 'image/jpeg';
   const blob = await new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
       (b) => (b ? resolve(b) : reject(new AppError('encodeFailed'))),
-      'image/jpeg',
-      JPEG_QUALITY,
+      mime,
+      mode === 'bw' ? undefined : JPEG_QUALITY,
     );
   });
   canvas.width = 0;
   canvas.height = 0;
 
-  const image = await out.embedJpg(new Uint8Array(await blob.arrayBuffer()));
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const image = mode === 'bw' ? await out.embedPng(bytes) : await out.embedJpg(bytes);
   const outPage = out.addPage([points.width, points.height]);
   const origin = { x: 0, y: 0 };
   if (points.rotation === 0) {

@@ -31,7 +31,21 @@
         <section id="dropzone" role="button" tabindex="0" aria-label="اختر ملف PDF">
           <input id="file" type="file" accept="application/pdf" hidden />
           <div class="drop-icon" aria-hidden="true"></div>
+          <p class="drop-hint">اسحب ملف PDF هنا أو اضغط للاختيار</p>
+          <p class="drop-note">حتى 50 ميجابايت و 1000 صفحة — المعالجة تتم محليًا على جهازك</p>
         </section>
+
+        <fieldset id="mode" aria-label="وضع التحويل">
+          <legend>وضع التحويل</legend>
+          <label>
+            <input type="radio" name="mode" value="bw" checked />
+            <span>أبيض وأسود فقط (نصوص)</span>
+          </label>
+          <label>
+            <input type="radio" name="mode" value="gray" />
+            <span>تدرج رمادي (مستندات تحتوي صورًا)</span>
+          </label>
+        </fieldset>
 
         <div id="status" role="status" aria-live="polite" hidden></div>
 
@@ -57,6 +71,10 @@
           <button id="download" class="primary" type="button">تحميل الملف المحوّل</button>
         </div>
       </main>
+
+      <footer>
+        <a href="mailto:send.zine@gmail.com">للتواصل أو الاقتراحات: send.zine@gmail.com</a>
+      </footer>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

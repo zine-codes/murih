@@ -1,4 +1,4 @@
-import { invertPixels, processImageData, type PixelStats } from './pixels';
+import { transformImageData, type ConvertMode, type PixelStats } from './pixels';
 
 export interface WorkerTransformResult {
   buf: ArrayBuffer;
@@ -6,7 +6,7 @@ export interface WorkerTransformResult {
 }
 
 export interface PixelWorker {
-  transform(buf: ArrayBuffer): Promise<WorkerTransformResult>;
+  transform(buf: ArrayBuffer, mode: ConvertMode): Promise<WorkerTransformResult>;
   dispose(): void;
 }
 
@@ -62,7 +62,10 @@ export function createPixelWorker(): Promise<PixelWorker | null> {
     worker.onerror = () => rejectAll(new Error('pixel worker failed'));
 
     resolve({
-      transform(buf) {
+      transform(buf, mode) {
+        if (mode !== 'bw' && mode !== 'gray') {
+          return Promise.reject(new Error('pixel worker received invalid mode'));
+        }
         return new Promise<WorkerTransformResult>((resolveFn, rejectFn) => {
           const id = nextId++;
           const timer = setTimeout(() => {
@@ -78,7 +81,7 @@ export function createPixelWorker(): Promise<PixelWorker | null> {
               rejectFn(err);
             },
           });
-          worker.postMessage({ id, buf }, [buf]);
+          worker.postMessage({ id, buf, mode }, [buf]);
         });
       },
       dispose() {
@@ -95,10 +98,10 @@ export function transformPixelsOnMainThread(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
+  mode: ConvertMode,
 ): PixelStats {
   const image = ctx.getImageData(0, 0, width, height);
-  const stats = processImageData(image.data);
-  if (!stats.isDark) invertPixels(image.data);
+  const stats = transformImageData(image.data, mode);
   ctx.putImageData(image, 0, 0);
   return stats;
 }
