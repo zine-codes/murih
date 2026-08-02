@@ -133,6 +133,11 @@ try {
   if (cmap.status() !== 200) {
     throw new Error(`cmap asset not served (HTTP ${cmap.status()})`);
   }
+  const licenseRes = await page.request.get(`http://localhost:${PORT}/licenses/pdfjs-dist.txt`);
+  const licenseBody = await licenseRes.text();
+  if (licenseRes.status() !== 200 || !/Apache License/.test(licenseBody)) {
+    throw new Error(`pdfjs-dist license not served (HTTP ${licenseRes.status()})`);
+  }
   for (const wasm of ['jbig2.wasm', 'openjpeg.wasm', 'qcms_bg.wasm']) {
     const res = await page.request.get(`http://localhost:${PORT}/wasm/${wasm}`);
     const body = await res.body();

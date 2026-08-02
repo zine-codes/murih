@@ -15,3 +15,9 @@ const wasmDest = join(root, 'public', 'wasm');
 await mkdir(wasmDest, { recursive: true });
 await cp(wasmSrc, wasmDest, { recursive: true });
 console.log(`copied pdfjs wasm -> ${wasmDest}`);
+
+const licensesDest = join(root, 'public', 'licenses');
+await mkdir(licensesDest, { recursive: true });
+const licenseSrc = join(root, 'node_modules', 'pdfjs-dist', 'LICENSE');
+await cp(licenseSrc, join(licensesDest, 'pdfjs-dist.txt'));
+console.log(`copied pdfjs LICENSE -> ${join(licensesDest, 'pdfjs-dist.txt')}`);

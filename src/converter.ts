@@ -1,5 +1,5 @@
 import type * as pdfjsType from 'pdfjs-dist';
-import type { PDFDocument } from 'pdf-lib';
+import { PdfWriter, PdfStreamWriter, createOpfsSink, rgbaToRgb } from './pdfwriter';
 import {
   NEUTRAL_PALETTE,
   type ConvertMode,
@@ -18,6 +18,8 @@ import {
   transformPixelsOnMainThread,
   type PixelWorker,
 } from './transform';
+
+const MURIH_OUTPUT_NAME = 'murih-output.pdf';
 
 export class AppError extends Error {
   constructor(
@@ -38,7 +40,7 @@ export interface ConvertOptions {
 }
 
 export interface ConvertResult {
-  bytes: Uint8Array<ArrayBuffer>;
+  blob: Blob;
   fileName: string;
   lightPages: number;
   darkPages: number;
@@ -50,7 +52,6 @@ export function darkFileName(name: string): string {
 }
 
 let pdfjsModule: Promise<typeof pdfjsType> | null = null;
-let pdflibModule: Promise<typeof import('pdf-lib')> | null = null;
 
 function loadPdfjs(): Promise<typeof pdfjsType> {
   if (!pdfjsModule) {
@@ -68,30 +69,21 @@ function loadPdfjs(): Promise<typeof pdfjsType> {
   return pdfjsModule;
 }
 
-function loadPdfLib(): Promise<typeof import('pdf-lib')> {
-  if (!pdflibModule) {
-    pdflibModule = import('pdf-lib').catch((err) => {
-      pdflibModule = null;
-      throw err;
-    });
-  }
-  return pdflibModule;
-}
-
 export async function convertPdf(options: ConvertOptions): Promise<ConvertResult> {
   const { file, mode, onProgress, shouldCancel } = options;
   const palette = options.palette ?? NEUTRAL_PALETTE;
   if (!fileWithinLimits(file.size)) throw new AppError('fileTooLarge');
 
   const pdfjs = await loadPdfjs();
-  const { PDFDocument } = await loadPdfLib();
   const worker: PixelWorker | null = await createPixelWorker();
 
   let doc: pdfjsType.PDFDocumentProxy | null = null;
   let loadingTask: pdfjsType.PDFDocumentLoadingTask | null = null;
-  let bytes: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  let blob: Blob = new Blob();
   let lightPages = 0;
   let darkPages = 0;
+  let out: PdfWriter | PdfStreamWriter | null = null;
+  let cleanupOpfs: (() => Promise<void>) | null = null;
 
   try {
     const data = await file.arrayBuffer();
@@ -106,9 +98,12 @@ export async function convertPdf(options: ConvertOptions): Promise<ConvertResult
     const total = doc.numPages;
     if (!pagesWithinLimits(total)) throw new AppError('tooManyPages');
 
-    const out = await PDFDocument.create();
     const base = baseScale(total);
     let workerOk = worker !== null;
+
+    const created = await createOutput(total);
+    out = created.writer;
+    cleanupOpfs = created.cleanupOpfs;
 
     for (let i = 1; i <= total; i++) {
       const { stats, workerOk: ok } = await processPage(
@@ -128,9 +123,16 @@ export async function convertPdf(options: ConvertOptions): Promise<ConvertResult
       onProgress(i, total);
     }
 
-    bytes = (await out.save()) as Uint8Array<ArrayBuffer>;
     if (shouldCancel()) throw new AppError('cancelled');
+
+    if (out instanceof PdfStreamWriter) {
+      blob = await out.finalize();
+    } else {
+      blob = new Blob([out.save()], { type: 'application/pdf' });
+    }
   } catch (err) {
+    if (out instanceof PdfStreamWriter) await out.abort().catch(() => undefined);
+    if (cleanupOpfs) await cleanupOpfs().catch(() => undefined);
     if (err instanceof AppError) throw err;
     const name = (err as { name?: string })?.name;
     const message = err instanceof Error ? err.message : String(err ?? '');
@@ -146,13 +148,42 @@ export async function convertPdf(options: ConvertOptions): Promise<ConvertResult
     if (loadingTask) loadingTask.destroy().catch(() => undefined);
   }
 
-  return { bytes, fileName: darkFileName(file.name), lightPages, darkPages };
+  return { blob, fileName: darkFileName(file.name), lightPages, darkPages };
+}
+
+async function createOutput(
+  total: number,
+): Promise<{ writer: PdfWriter | PdfStreamWriter; cleanupOpfs: (() => Promise<void>) | null }> {
+  try {
+    if (
+      typeof navigator !== 'undefined' &&
+      'storage' in navigator &&
+      typeof navigator.storage?.getDirectory === 'function'
+    ) {
+      const root = await navigator.storage.getDirectory();
+      const handle = await root.getFileHandle(MURIH_OUTPUT_NAME, { create: true });
+      const sink = await createOpfsSink(handle);
+      return {
+        writer: new PdfStreamWriter(sink, total),
+        cleanupOpfs: async () => {
+          try {
+            await root.removeEntry(MURIH_OUTPUT_NAME);
+          } catch {
+            /* entry already removed */
+          }
+        },
+      };
+    }
+  } catch {
+    /* OPFS unavailable — fall back to in-RAM */
+  }
+  return { writer: new PdfWriter(), cleanupOpfs: null };
 }
 
 async function processPage(
   doc: pdfjsType.PDFDocumentProxy,
   index: number,
-  out: PDFDocument,
+  out: PdfWriter | PdfStreamWriter,
   base: number,
   worker: PixelWorker | null,
   workerOk: boolean,
@@ -196,49 +227,84 @@ async function processPage(
   }
 
   let stats: PixelStats;
-  if (worker && workerOk) {
-    const image = ctx.getImageData(0, 0, width, height);
-    try {
-      const { buf, stats: fullStats } = await worker.transform(image.data.buffer, mode, palette);
-      ctx.putImageData(new ImageData(new Uint8ClampedArray(buf), width, height), 0, 0);
-      stats = fullStats;
-    } catch {
-      workerOk = false;
-      stats = transformPixelsOnMainThread(ctx, width, height, mode, palette);
+  let workerOkOut = workerOk;
+  let image:
+    | { kind: 'rgb'; rgb: Uint8Array<ArrayBuffer>; width: number; height: number }
+    | { kind: 'jpeg'; bytes: Uint8Array; width: number; height: number };
+
+  if (mode === 'bw') {
+    if (worker && workerOkOut) {
+      const img = ctx.getImageData(0, 0, width, height);
+      try {
+        const { stats: fullStats, rgb } = await worker.transform(img.data.buffer, mode, palette, true);
+        if (!rgb) throw new Error('worker returned no rgb');
+        stats = fullStats;
+        canvas.width = 0;
+        canvas.height = 0;
+        image = { kind: 'rgb', rgb: new Uint8Array(rgb), width, height };
+      } catch {
+        workerOkOut = false;
+        const fallback = transformPixelsOnMainThread(ctx, width, height, mode, palette);
+        stats = fallback.stats;
+        canvas.width = 0;
+        canvas.height = 0;
+        image = { kind: 'rgb', rgb: rgbaToRgb(fallback.data, width, height), width, height };
+      }
+    } else {
+      const fallback = transformPixelsOnMainThread(ctx, width, height, mode, palette);
+      stats = fallback.stats;
+      canvas.width = 0;
+      canvas.height = 0;
+      image = { kind: 'rgb', rgb: rgbaToRgb(fallback.data, width, height), width, height };
     }
   } else {
-    stats = transformPixelsOnMainThread(ctx, width, height, mode, palette);
+    if (worker && workerOkOut) {
+      const img = ctx.getImageData(0, 0, width, height);
+      try {
+        const { buf, stats: fullStats } = await worker.transform(img.data.buffer, mode, palette, false);
+        if (!buf) throw new Error('worker returned no rgba');
+        ctx.putImageData(new ImageData(new Uint8ClampedArray(buf), width, height), 0, 0);
+        stats = fullStats;
+      } catch {
+        workerOkOut = false;
+        const fallback = transformPixelsOnMainThread(ctx, width, height, mode, palette);
+        stats = fallback.stats;
+      }
+    } else {
+      const fallback = transformPixelsOnMainThread(ctx, width, height, mode, palette);
+      stats = fallback.stats;
+    }
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (b) => (b ? resolve(b) : reject(new AppError('encodeFailed'))),
+        'image/jpeg',
+        JPEG_QUALITY,
+      );
+    });
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    canvas.width = 0;
+    canvas.height = 0;
+    image = { kind: 'jpeg', bytes, width, height };
   }
 
   if (shouldCancel()) throw new AppError('cancelled');
-  const mime = mode === 'bw' ? 'image/png' : 'image/jpeg';
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new AppError('encodeFailed'))),
-      mime,
-      mode === 'bw' ? undefined : JPEG_QUALITY,
-    );
-  });
-  canvas.width = 0;
-  canvas.height = 0;
 
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  const image = mode === 'bw' ? await out.embedPng(bytes) : await out.embedJpg(bytes);
-  const outPage = out.addPage([points.width, points.height]);
-  const origin = { x: 0, y: 0 };
-  if (points.rotation === 0) {
-    const view = page.view;
-    outPage.setMediaBox(view[0], view[1], points.width, points.height);
-    origin.x = view[0];
-    origin.y = view[1];
-  }
-  outPage.drawImage(image, {
-    x: origin.x,
-    y: origin.y,
-    width: points.width,
-    height: points.height,
+  const view = page.view;
+  const mediaBox: [number, number, number, number] =
+    points.rotation === 0
+      ? [view[0], view[1], view[0] + points.width, view[1] + points.height]
+      : [0, 0, points.width, points.height];
+  const origin = points.rotation === 0 ? { x: view[0], y: view[1] } : { x: 0, y: 0 };
+
+  await out.addPage({
+    widthPts: points.width,
+    heightPts: points.height,
+    mediaBox,
+    drawX: origin.x,
+    drawY: origin.y,
+    image,
   });
 
   page.cleanup();
-  return { stats, workerOk };
+  return { stats, workerOk: workerOkOut };
 }

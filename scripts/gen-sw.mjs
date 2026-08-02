@@ -48,7 +48,20 @@ const wasm = (
   )
 ).filter((f) => f !== null);
 
-const shell = [...new Set([...ROOT_SHELL, ...entryAssets, ...wasm])];
+const OPTIONAL_SHELL = ['./licenses/pdfjs-dist.txt'];
+
+async function existing(file) {
+  try {
+    await access(join(DIST, file.replace(/^\.\//, '')));
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+const shell = [
+  ...new Set([...ROOT_SHELL, ...entryAssets, ...wasm, ...(await Promise.all(OPTIONAL_SHELL.map(existing))).filter(Boolean)]),
+];
 const allFiles = await listDist();
 const cacheHash = createHash('sha256').update(JSON.stringify(allFiles)).digest('hex').slice(0, 10);
 const CACHE = `murih-${cacheHash}`;
@@ -66,6 +79,7 @@ const isAppAsset = (url) => {
     p.startsWith("/assets/") ||
     p.startsWith("/cmaps/") ||
     p.startsWith("/wasm/") ||
+    p.startsWith("/licenses/") ||
     p.endsWith("/manifest.webmanifest") ||
     p.endsWith("/favicon.svg") ||
     p.includes("/pwa-") ||

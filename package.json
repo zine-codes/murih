@@ -10,14 +10,15 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:e2e": "npm run build && node scripts/e2e-smoke.mjs",
+    "test:mem": "npm run build && node scripts/e2e-memory.mjs",
     "typecheck": "tsc --noEmit",
     "prepare": "node scripts/copy-assets.mjs"
   },
   "dependencies": {
-    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.2.108"
   },
   "devDependencies": {
+    "pdf-lib": "^1.17.1",
     "playwright": "^1.62.1",
     "typescript": "^7.0.2",
     "vite": "^8.2.0",

@@ -3,4 +3,5 @@ dist/
 .e2e/
 public/cmaps/
 public/wasm/
+public/licenses/
 *.log

@@ -121,9 +121,8 @@ function runConversion(file: File): void {
     .then((result) => {
       if (abort.signal.aborted) return;
       setBusy(false);
-      const blob = new Blob([result.bytes], { type: 'application/pdf' });
       if (resultUrl) URL.revokeObjectURL(resultUrl);
-      resultUrl = URL.createObjectURL(blob);
+      resultUrl = URL.createObjectURL(result.blob);
       downloadBtn.onclick = () => {
         const a = document.createElement('a');
         a.href = resultUrl!;

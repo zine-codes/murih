@@ -21,15 +21,15 @@ Stack: Vite + vanilla TypeScript, no framework.
 - Per-page auto detection: light pages are binarized/inverted onto the night
   palette; already-dark pages are binarized/remapped into the palette range but
   never re-lightened (kept dark).
-- Fast on mobile: lazy-load pdfjs-dist + pdf-lib only after a file is dropped
-  (first paint stays tiny); pixel work off the main thread where possible;
-  process one page at a time; free each canvas before the next page.
+- Fast on mobile: lazy-load pdfjs-dist only after a file is dropped (first paint
+  stays tiny); pixel work off the main thread where possible; process one page at
+  a time; free each canvas before the next page.
 
 ## Limits (owner-specified, hard)
 - Reject input file >= 50 MB or >= 1000 pages, with an Arabic error message.
 - Render DPI adapts within the cap (300 → 220 → 150 → 96); never reject a file
-  that fits the cap, just downscale. JPEG q≈0.8 (gray mode); `bw` mode encodes
-  lossless PNG so the exact 2-tone palette values stay pixel-perfect.
+  that fits the cap, just downscale. JPEG q≈0.8 (gray mode); `bw` mode embeds
+  lossless deflated RGB so the exact 2-tone palette values stay pixel-perfect.
 
 ## Memory & quality model (critical)
 Browsers die on pixel count, not file size:
@@ -38,10 +38,22 @@ Browsers die on pixel count, not file size:
   <= ~16.7 MP — a 300 DPI A3 page (~17.4 MP) silently breaks on iPhones.
 - ~300 DPI A4 ≈ 34 MB per RGBA canvas; pdf.js allocates a 2nd buffer while
   rendering, so peak per-page ≈ 2 canvases + one image blob.
-- `bw` mode: pdf-lib's `embedPng` fully decodes the PNG on the main thread (to read
-  width/height) before embedding the original bytes losslessly — a transient decode
-  buffer and a brief UI-thread pause per page. JPEG (`gray` mode) has no such step.
-- pdf-lib holds the ENTIRE output doc + all images in RAM until save().
+- `src/pdfwriter.ts` has two writers. The in-RAM `PdfWriter` holds the entire
+  output doc + all image streams until `save()` (used as fallback). The primary
+  `PdfStreamWriter` streams each object straight to an OPFS-backed sink
+  (`navigator.storage.getDirectory()` → `createWritable()`), so output size does
+  NOT scale with RAM: a 100-page run stays flat (~610 MB peak chrome RSS vs
+  ~1035 MB accumulating pre-fix) and survives a 300 MB heap cap. `converter.ts`
+  picks the stream writer when OPFS is available and falls back to `PdfWriter`;
+  the two produce byte-identical PDFs (asserted in unit tests). On failure the
+  partial OPFS entry is removed.
+- `bw` mode: RGB is deflated with the native `CompressionStream('deflate')` (zlib
+  format, streaming/async) and embedded as a `/FlateDecode` image stream — no PNG
+  round-trip and no main-thread decode step. Browsers without `CompressionStream`
+  fall back to an unfiltered raw RGB stream (bigger file, still valid). In `bw`
+  mode the RGBA→RGB conversion runs inside the pixel worker (`wantRgb`), so the
+  main thread never holds the transformed RGBA buffer; the canvas is zeroed right
+  after `getImageData`.
 - Always process one page at a time and release the canvas before the next.
 
 ## Core pipeline
@@ -58,8 +70,9 @@ Browsers die on pixel count, not file size:
    random threshold. `gray` mode: light pages map through a gamma-aware inverted
    palette LUT (`makeNightLut`); dark pages remap monotonically into the palette
    range (`makeDarkLut`) and are never re-lightened.
-4. Encode per mode: `bw` → PNG (`embedPng`), `gray` → JPEG q≈0.8 (`embedJpg`);
-   pdf-lib builds output PDF preserving the original MediaBox.
+4. Encode per mode: `bw` → deflated RGB (`/FlateDecode`), `gray` → JPEG q≈0.8
+   (`/DCTDecode`); `src/pdfwriter.ts` (first-party, no third-party code) builds the
+   output PDF preserving the original MediaBox.
 
 ## pdf.js + Vite gotchas
 - Worker: `pdfjs-dist/build/pdf.worker.mjs?url` (v6). Missing workerSrc is the
@@ -68,33 +81,43 @@ Browsers die on pixel count, not file size:
 - JBIG2/JPEG2000/ICC (scanned PDFs): pass `wasmUrl: 'wasm/'`; copy
   `pdfjs-dist/wasm` → `public/wasm` or those streams fail (worker logs
   "No ICC color space support…" / "JBig2 failed to initialize"). `prepare`
-  (`scripts/copy-assets.mjs`) copies cmaps + wasm into `public/`.
+  (`scripts/copy-assets.mjs`) copies cmaps + wasm into `public/` and the
+  pdfjs-dist LICENSE into `public/licenses/pdfjs-dist.txt`.
 - Pixel transform (stats + Otsu/grayscale/inversion) runs in a Web Worker via
   transferred ArrayBuffers (universal support); no OffscreenCanvas needed. Fall
-  back to main thread if Worker construction fails.
+  back to main thread if Worker construction fails. In `bw` mode the worker also
+  produces the planar RGB buffer (`wantRgb: true`) so the RGBA→RGB conversion
+  never happens on the main thread.
 
 ## Commands
 - npm run dev / build / preview (Vite; `npm run build` runs `tsc --noEmit && vite build`
   then `scripts/gen-sw.mjs`, which writes `dist/sw.js`)
 - npm run icons (regenerate PWA icons into `public/` via `scripts/generate-icons.mjs`)
-- npm test (Vitest) for the inversion + dark-detection core (pure functions)
+- npm test (Vitest) for the inversion + dark-detection core (pure functions) and
+  the output PDF writer (`src/pdfwriter.ts`)
 - npm run test:e2e (Playwright + headless Chromium) — full browser run against the
   production build: drop a 3-page PDF (2 light incl. one with an offset MediaBox,
   1 dark-green/yellow), assert detection stats, mode/palette defaults +
   busy-disable, download filename, MediaBox preservation, bw 2-tone purity, a
-  gray-mode re-run, a warm-palette re-run, zero page errors, and zero CSP
-  violations under the exact policy shipped in
+  gray-mode re-run, a warm-palette re-run, the shipped pdfjs-dist license file,
+  zero page errors, and zero CSP violations under the exact policy shipped in
   `public/_headers`. Requires `npx playwright install chromium`.
+- npm run test:mem — Playwright memory stress run against the production build
+  (`scripts/e2e-memory.mjs`): converts N noise A4 pages in gray mode under
+  `--max-old-space-size` (`MEM_PAGES` default 40, `MEM_HEAP_MB` default 300) and
+  fails if chrome RSS grows by >50% of the heap cap between progress ≤40% and
+  ≥70% (guards against the output re-accumulating in RAM), or if the run doesn't
+  finish at all.
 - npm run typecheck (tsc --noEmit)
 
 ## PWA
 - Installable via `public/manifest.webmanifest` + self-hosted icons (generated by
   `npm run icons`). iOS home-screen requires the opaque `apple-touch-icon.png`.
 - `npm run build` runs `scripts/gen-sw.mjs` → `dist/sw.js`. It precaches the app
-  shell (index.html + entry assets + icons + wasm decoders) and runtime-caches
-  same-origin static assets (pdf.js/pdf-lib chunks, cmaps) stale-while-revalidate,
-  so offline conversion works once the needed libraries were used online. The SW
-  must NEVER cache user files — only the app's own assets.
+  shell (index.html + entry assets + icons + wasm decoders + licenses) and
+  runtime-caches same-origin static assets (pdf.js chunks, cmaps)
+  stale-while-revalidate, so offline conversion works once the needed libraries
+  were used online. The SW must NEVER cache user files — only the app's own assets.
 - The SW cache name is derived from the build output (hash of the `dist/` file
   list), so every deploy prunes the previous cache and stale assets never
   accumulate.
@@ -112,9 +135,13 @@ Browsers die on pixel count, not file size:
   (Cloudflare Pages does not send it by default). Do NOT also enable HSTS in the
   Cloudflare dashboard — that duplicates the header. It stays green in the e2e because
   browsers ignore HSTS over plain HTTP (the e2e serves http://localhost).
-- pdf-lib is used ONLY for output (`create`/`embed*`/`save`). Its upstream advisories —
-  DecodeStream decompression bomb (pdf-lib#1777) and `parseDate` ReDoS (#1773) — require
-  `PDFDocument.load()` / `setMetadata()`, which this app never calls. If pdf-lib is ever
-  used to read an input PDF, re-audit both.
+- pdf-lib is a DEV-only dependency, used solely by `scripts/e2e-smoke.mjs` to
+  build the input fixture and to verify the output (MediaBox). It is never
+  bundled or shipped.
+- Licenses: pdfjs-dist (Apache-2.0) is the ONLY third-party runtime component. Its
+  LICENSE ships at `dist/licenses/pdfjs-dist.txt` (copied by `prepare`); the cmaps
+  (Adobe BSD) and wasm decoders (BSD/MIT) license files ship inside
+  `dist/cmaps/` and `dist/wasm/`. The e2e asserts the license file is served.
+  Everything else in the bundle is first-party code.
 - Cancellation is a per-run `AbortController` in `main.ts` (`shouldCancel` reads its
   signal); a stale run is abandoned and never touches the DOM.

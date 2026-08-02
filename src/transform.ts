@@ -7,12 +7,18 @@ import {
 } from './pixels';
 
 export interface WorkerTransformResult {
-  buf: ArrayBuffer;
+  buf?: ArrayBuffer;
   stats: PixelStats;
+  rgb?: ArrayBuffer;
 }
 
 export interface PixelWorker {
-  transform(buf: ArrayBuffer, mode: ConvertMode, palette: NightPalette): Promise<WorkerTransformResult>;
+  transform(
+    buf: ArrayBuffer,
+    mode: ConvertMode,
+    palette: NightPalette,
+    wantRgb: boolean,
+  ): Promise<WorkerTransformResult>;
   dispose(): void;
 }
 
@@ -21,7 +27,7 @@ interface PendingEntry {
   reject: (err: Error) => void;
 }
 
-const TRANSFORM_TIMEOUT_MS = 30_000;
+const TRANSFORM_TIMEOUT_MS = 120_000;
 
 function isPixelStats(value: unknown): value is PixelStats {
   const s = value as PixelStats;
@@ -54,21 +60,24 @@ export function createPixelWorker(): Promise<PixelWorker | null> {
       pending.clear();
     };
 
-    worker.onmessage = (e: MessageEvent<{ id?: unknown; buf?: unknown; stats?: unknown }>) => {
+    worker.onmessage = (e: MessageEvent<{ id?: unknown; buf?: unknown; stats?: unknown; rgb?: unknown }>) => {
       const data = e.data;
       const entry = typeof data?.id === 'number' ? pending.get(data.id) : undefined;
       if (!entry) return;
       pending.delete(data.id as number);
-      if (!(data.buf instanceof ArrayBuffer) || !isPixelStats(data.stats)) {
+      if (!isPixelStats(data.stats)) {
         entry.reject(new Error('pixel worker returned malformed data'));
         return;
       }
-      entry.resolve({ buf: data.buf, stats: data.stats });
+      const result: WorkerTransformResult = { stats: data.stats };
+      if (data.buf instanceof ArrayBuffer) result.buf = data.buf;
+      if (data.rgb instanceof ArrayBuffer) result.rgb = data.rgb;
+      entry.resolve(result);
     };
     worker.onerror = () => rejectAll(new Error('pixel worker failed'));
 
     resolve({
-      transform(buf, mode, palette) {
+      transform(buf, mode, palette, wantRgb) {
         if (mode !== 'bw' && mode !== 'gray') {
           return Promise.reject(new Error('pixel worker received invalid mode'));
         }
@@ -90,7 +99,7 @@ export function createPixelWorker(): Promise<PixelWorker | null> {
               rejectFn(err);
             },
           });
-          worker.postMessage({ id, buf, mode, palette }, [buf]);
+          worker.postMessage({ id, buf, mode, palette, wantRgb }, [buf]);
         });
       },
       dispose() {
@@ -109,9 +118,9 @@ export function transformPixelsOnMainThread(
   height: number,
   mode: ConvertMode,
   palette: NightPalette,
-): PixelStats {
+): { stats: PixelStats; data: Uint8ClampedArray<ArrayBuffer> } {
   const image = ctx.getImageData(0, 0, width, height);
   const stats = transformImageData(image.data, mode, palette);
   ctx.putImageData(image, 0, 0);
-  return stats;
+  return { stats, data: image.data };
 }
