@@ -9,6 +9,14 @@ version you can download. Drop a file, pick a mode, download the result. That's 
 Everything runs in your browser — **100% client-side**. Your documents never leave
 your device, no account, no sign-up, no tracking.
 
+## مشاريع أخرى | Related projects
+
+More apps by the same author:
+
+- **مريح (Murih)** — this project: <https://github.com/zine-codes/murih>
+- **دفتري (Daftari)** — private RTL notes PWA: <https://github.com/zine-codes/daftari>
+- **لمحة (Lamha)** — Arabic-first flashcard review: <https://github.com/zine-codes/lamha>
+
 ## What makes it different
 
 - **Zero uploads, zero backend.** Files are processed locally with your own CPU.
