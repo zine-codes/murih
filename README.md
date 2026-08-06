@@ -14,8 +14,7 @@ your device, no account, no sign-up, no tracking.
 More apps by the same author:
 
 - **مريح (Murih)** — this project: <https://github.com/zine-codes/murih>
-- **دفتري (Daftari)** — private RTL notes PWA: <https://github.com/zine-codes/daftari>
-- **لمحة (Lamha)** — Arabic-first flashcard review: <https://github.com/zine-codes/lamha>
+- All other apps: <https://zinedev.pages.dev>
 
 ## What makes it different
 

@@ -300,6 +300,11 @@ footer a:hover {
   text-decoration: underline;
 }
 
+footer .footer-more {
+  display: block;
+  margin-top: 6px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;
