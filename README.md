@@ -13,7 +13,7 @@ your device, no account, no sign-up, no tracking.
 
 More apps by the same author:
 
-- **مريح (Murih)** — this project: <https://github.com/zine-codes/murih>
+- **مريح (Murih)** — this project: <https://murih.pages.dev>
 - All other apps: <https://zinedev.pages.dev>
 
 ## What makes it different
