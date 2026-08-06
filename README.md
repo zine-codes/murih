@@ -9,6 +9,10 @@ version you can download. Drop a file, pick a mode, download the result. That's 
 Everything runs in your browser — **100% client-side**. Your documents never leave
 your device, no account, no sign-up, no tracking.
 
+[![Live](https://img.shields.io/badge/live-murih.pages.dev-blue)](https://murih.pages.dev)
+![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6)
+[![License](https://img.shields.io/badge/license-All%20rights%20reserved-blue)](#licenses)
+
 ## مشاريع أخرى | Related projects
 
 More apps by the same author:
@@ -165,3 +169,9 @@ It's a static site. Build it, then point any static host at `dist/`:
 ## Contact
 
 Feedback, feature requests, or bug reports: send.zine@gmail.com
+
+## License
+
+The code in this repository is **all rights reserved** (not open source). The only
+third-party code shipped is pdf.js and its decoders, which keep their own licenses
+(see [Licenses](#licenses) above).
